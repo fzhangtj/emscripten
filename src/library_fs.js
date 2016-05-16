@@ -1800,7 +1800,7 @@ mergeInto(LibraryManager.library, {
     // persistence
     //
     indexedDB: function() {
-      return window.indexedDB || window.mozIndexedDB || window.webkitIndexedDB || window.msIndexedDB;
+      return Module.indexedDB;
     },
 
     DB_NAME: function() {
