@@ -2077,9 +2077,9 @@ var LibraryGL = {
   },
 
   glFenceSync__sig: 'iii',
-  glFenceSync: function() {
+  glFenceSync: function(condition, flags) {
     var id = GL.getNewId(GL.syncs);
-    var sync = GLctx.fenceSync();
+    var sync = GLctx.fenceSync(condition, flags);
     sync.name = id;
     GL.syncs[id] = sync;
     return id;
@@ -3571,6 +3571,16 @@ var LibraryGL = {
     GLctx.framebufferTexture2D(target, attachment, textarget,
                                     GL.textures[texture], level);
   },
+
+#if USE_WEBGL2
+  glFramebufferTextureLayer__sig: 'viiiii',
+  glFramebufferTextureLayer: function(target, attachment, texture, level, layer) {
+#if GL_ASSERTIONS
+    GL.validateGLObjectID(GL.textures, texture, 'glFramebufferTextureLayer', 'texture');
+#endif
+    GLctx.framebufferTextureLayer(target, attachment, GL.textures[texture], level, layer);
+  },
+#endif
 
   glGetFramebufferAttachmentParameteriv__sig: 'viiii',
   glGetFramebufferAttachmentParameteriv: function(target, attachment, pname, params) {
@@ -7334,7 +7344,6 @@ var LibraryGL = {
   glRenderbufferStorageMultisample__sig: 'viiiii',
   glCopyTexSubImage3D__sig: 'viiiiiiiii',
   glClearBufferfi__sig: 'viifi',
-  glFramebufferTextureLayer__sig: 'viiiii',
 #endif
 };
 
@@ -7355,7 +7364,7 @@ var glFuncs = [[0, 'finish flush'],
 glFuncs[0][1] += ' endTransformFeedback pauseTransformFeedback resumeTransformFeedback';
 glFuncs[1][1] += ' beginTransformFeedback readBuffer endQuery';
 glFuncs[4][1] += ' clearBufferfi';
-glFuncs[5][1] += ' vertexAttribI4i vertexAttribI4ui copyBufferSubData texStorage2D renderbufferStorageMultisample framebufferTextureLayer';
+glFuncs[5][1] += ' vertexAttribI4i vertexAttribI4ui copyBufferSubData texStorage2D renderbufferStorageMultisample';
 // TODO: Removed as a workaround, see https://bugzilla.mozilla.org/show_bug.cgi?id=1202427
 //glFuncs[6][1] += ' drawRangeElements';
 glFuncs[6][1] += ' texStorage3D';
