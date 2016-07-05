@@ -1909,7 +1909,7 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
           cmd += ['--no-opts']
         logging.debug('asm2wasm (asm.js => WebAssembly): ' + ' '.join(cmd))
         TimeLogger.update()
-        subprocess.check_call(cmd, stdout=open(wasm_text_target, 'w'), shell=True)
+        subprocess.check_call(cmd, stdout=open(wasm_text_target, 'w'))
         log_time('asm2wasm')
       if shared.Settings.BINARYEN_SCRIPTS:
         binaryen_scripts = os.path.join(shared.Settings.BINARYEN_ROOT, 'scripts')
