@@ -916,18 +916,24 @@ LibraryManager.library = {
     {{{ makeStructuralReturn(['ret', '0']) }}};
   },
 
+  llvm_ctpop_i32__asm: true,
+  llvm_ctpop_i32__sig: 'ii',
   llvm_ctpop_i32: function(x) {
-    var ret = 0;
-    while (x) {
-      if (x&1) ret++;
-      x >>>= 1;
-    }
-    return ret;
+    // http://graphics.stanford.edu/~seander/bithacks.html#CountBitsSetParallel
+    // http://bits.stephan-brumme.com/countBits.html
+    x = x | 0;
+    x = x - ((x >>> 1) & 0x55555555) | 0;
+    x = (x & 0x33333333) + ((x >>> 2) & 0x33333333) | 0;
+    return (Math_imul((x + (x >>> 4) & 252645135 /* 0xF0F0F0F, but hits uglify parse bug? */), 0x1010101) >>> 24) | 0;
   },
 
   llvm_ctpop_i64__deps: ['llvm_ctpop_i32'],
+  llvm_ctpop_i64__asm: true,
+  llvm_ctpop_i64__sig: 'iii',
   llvm_ctpop_i64: function(l, h) {
-    return _llvm_ctpop_i32(l) + _llvm_ctpop_i32(h);
+    l = l | 0;
+    h = h | 0;
+    return (_llvm_ctpop_i32(l) | 0) + (_llvm_ctpop_i32(h) | 0) | 0;
   },
 
   llvm_trap: function() {
@@ -983,7 +989,12 @@ LibraryManager.library = {
       info.refcount--;
       if (info.refcount === 0) {
         if (info.destructor) {
+#if WASM_BACKEND == 0
           Runtime.dynCall('vi', info.destructor, [ptr]);
+#else
+          // In Wasm, destructors return 'this' as in ARM
+          Runtime.dynCall('ii', info.destructor, [ptr]);
+#endif
         }
         delete EXCEPTIONS.infos[ptr];
         ___cxa_free_exception(ptr);
@@ -1035,7 +1046,8 @@ LibraryManager.library = {
       adjusted: ptr,
       type: type,
       destructor: destructor,
-      refcount: 0
+      refcount: 0,
+      caught: false
     };
     EXCEPTIONS.last = ptr;
     if (!("uncaught_exception" in __ZSt18uncaught_exceptionv)) {
@@ -1076,7 +1088,11 @@ LibraryManager.library = {
   },
   __cxa_begin_catch__deps: ['_ZSt18uncaught_exceptionv', '$EXCEPTIONS'],
   __cxa_begin_catch: function(ptr) {
-    __ZSt18uncaught_exceptionv.uncaught_exception--;
+    var info = EXCEPTIONS.infos[ptr];
+    if (info && !info.caught) {
+      info.caught = true;
+      __ZSt18uncaught_exceptionv.uncaught_exception--;
+    }
     EXCEPTIONS.caught.push(ptr);
 #if EXCEPTION_DEBUG
 		Module.printErr('cxa_begin_catch ' + [ptr, 'stack', EXCEPTIONS.caught]);
@@ -1356,10 +1372,20 @@ LibraryManager.library = {
   llvm_log_f64: 'Math_log',
   llvm_exp_f32: 'Math_exp',
   llvm_exp_f64: 'Math_exp',
+  llvm_sin_f32: 'Math_sin',
+  llvm_sin_f64: 'Math_sin',
   llvm_trunc_f32: 'Math_trunc',
   llvm_trunc_f64: 'Math_trunc',
   llvm_floor_f32: 'Math_floor',
   llvm_floor_f64: 'Math_floor',
+
+  llvm_copysign_f32: function(x, y) {
+    return y < 0 || (y === 0 && 1/y < 0) ? -Math_abs(x) : Math_abs(x);
+  },
+
+  llvm_copysign_f64: function(x, y) {
+    return y < 0 || (y === 0 && 1/y < 0) ? -Math_abs(x) : Math_abs(x);
+  },
 
   round__asm: true,
   round__sig: 'dd',
@@ -4049,6 +4075,8 @@ LibraryManager.library = {
   llvm_dbg_value: true,
   llvm_debugtrap: true,
   llvm_ctlz_i32: true,
+  llvm_maxnum_f32: true,
+  llvm_maxnum_f64: true,
   emscripten_asm_const: true,
   emscripten_asm_const_int: true,
   emscripten_asm_const_double: true,

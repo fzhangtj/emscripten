@@ -28,6 +28,21 @@
 char *gets(char *);
 #endif
 
+// Extra pthread_attr_t field:
+#define _a_transferredcanvases __u.__s[9]
+
+int emscripten_pthread_attr_gettransferredcanvases(const pthread_attr_t *a, const char **str)
+{
+	*str = (const char *)a->_a_transferredcanvases;
+	return 0;
+}
+
+int emscripten_pthread_attr_settransferredcanvases(pthread_attr_t *a, const char *str)
+{
+	a->_a_transferredcanvases = (int)str;
+	return 0;
+}
+
 int _pthread_getcanceltype()
 {
 	return pthread_self()->cancelasync;
@@ -312,6 +327,14 @@ void EMSCRIPTEN_KEEPALIVE emscripten_sync_run_in_main_thread(em_queued_call *cal
 		r = emscripten_futex_wait(&call->operationDone, 0, INFINITY);
 	} while(r != 0 && call->operationDone == 0);
 	emscripten_set_current_thread_status(EM_THREAD_STATUS_RUNNING);
+}
+
+void * EMSCRIPTEN_KEEPALIVE emscripten_sync_run_in_main_thread_0(int function)
+{
+	em_queued_call q = { function, 0 };
+	q.returnValue.vp = 0;
+	emscripten_sync_run_in_main_thread(&q);
+	return q.returnValue.vp;
 }
 
 void * EMSCRIPTEN_KEEPALIVE emscripten_sync_run_in_main_thread_1(int function, void *arg1)

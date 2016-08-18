@@ -341,6 +341,12 @@ ok.
   def test_sockets_echo(self):
     sockets_include = '-I'+path_from_root('tests', 'sockets')
 
+    # Note: in the WebsockifyServerHarness and CompiledServerHarness tests below, explicitly use consecutive server listen ports,
+    # because server teardown might not occur deterministically (python dtor time) and is a bit racy.
+    # WebsockifyServerHarness uses two port numbers, x and x-1, so increment it by two.
+    # CompiledServerHarness only uses one. Start with 49160 & 49159 as the first server port addresses. If adding new tests,
+    # increment the used port addresses below.
+
     # Websockify-proxied servers can't run dgram tests
     harnesses = [
       (WebsockifyServerHarness(os.path.join('sockets', 'test_sockets_echo_server.c'), [sockets_include], 49160), 0),
@@ -366,18 +372,20 @@ ok.
 
     # Websockify-proxied servers can't run dgram tests
     harnesses = [
-      (WebsockifyServerHarness(os.path.join('sockets', 'test_sockets_echo_server.c'), [sockets_include, '-DTEST_ASYNC=1'], 49165), 0),
-      (CompiledServerHarness(os.path.join('sockets', 'test_sockets_echo_server.c'), [sockets_include, '-DTEST_DGRAM=0', '-DTEST_ASYNC=1'], 49166), 0),
-      (CompiledServerHarness(os.path.join('sockets', 'test_sockets_echo_server.c'), [sockets_include, '-DTEST_DGRAM=1', '-DTEST_ASYNC=1'], 49167), 1),
+      (WebsockifyServerHarness(os.path.join('sockets', 'test_sockets_echo_server.c'), [sockets_include, '-DTEST_ASYNC=1'], 49166), 0),
+      (CompiledServerHarness(os.path.join('sockets', 'test_sockets_echo_server.c'), [sockets_include, '-DTEST_DGRAM=0', '-DTEST_ASYNC=1'], 49167), 0),
+      (CompiledServerHarness(os.path.join('sockets', 'test_sockets_echo_server.c'), [sockets_include, '-DTEST_DGRAM=1', '-DTEST_ASYNC=1'], 49168), 1),
       # The following forces non-NULL addr and addlen parameters for the accept call
-      (CompiledServerHarness(os.path.join('sockets', 'test_sockets_echo_server.c'), [sockets_include, '-DTEST_DGRAM=0', '-DTEST_ACCEPT_ADDR=1', '-DTEST_ASYNC=1'], 49168), 0)
+      (CompiledServerHarness(os.path.join('sockets', 'test_sockets_echo_server.c'), [sockets_include, '-DTEST_DGRAM=0', '-DTEST_ACCEPT_ADDR=1', '-DTEST_ASYNC=1'], 49169), 0)
     ]
 
     for harness, datagram in harnesses:
+      print 'harness:', harness
       with harness:
         self.btest(os.path.join('sockets', 'test_sockets_echo_client.c'), expected='0', args=['-DSOCKK=%d' % harness.listen_port, '-DTEST_DGRAM=%d' % datagram, '-DTEST_ASYNC=1', sockets_include])
 
     # Deliberately attempt a connection on a port that will fail to test the error callback and getsockopt
+    print 'expect fail'
     self.btest(os.path.join('sockets', 'test_sockets_echo_client.c'), expected='0', args=['-DSOCKK=49169', '-DTEST_ASYNC=1', sockets_include])
 
   def test_sockets_echo_bigdata(self):
@@ -394,9 +402,9 @@ ok.
     output = input.replace('#define MESSAGE "pingtothepong"', '#define MESSAGE "%s"' % message)
 
     harnesses = [
-      (WebsockifyServerHarness(os.path.join('sockets', 'test_sockets_echo_server.c'), [sockets_include], 49170), 0),
-      (CompiledServerHarness(os.path.join('sockets', 'test_sockets_echo_server.c'), [sockets_include, '-DTEST_DGRAM=0'], 49171), 0),
-      (CompiledServerHarness(os.path.join('sockets', 'test_sockets_echo_server.c'), [sockets_include, '-DTEST_DGRAM=1'], 49172), 1)
+      (WebsockifyServerHarness(os.path.join('sockets', 'test_sockets_echo_server.c'), [sockets_include], 49171), 0),
+      (CompiledServerHarness(os.path.join('sockets', 'test_sockets_echo_server.c'), [sockets_include, '-DTEST_DGRAM=0'], 49172), 0),
+      (CompiledServerHarness(os.path.join('sockets', 'test_sockets_echo_server.c'), [sockets_include, '-DTEST_DGRAM=1'], 49173), 1)
     ]
 
     for harness, datagram in harnesses:

@@ -23,11 +23,16 @@ emcc can be influenced by a few environment variables:
   EMMAKEN_COMPILER - The compiler to be used, if you don't want the default clang.
 '''
 
+from tools.toolchain_profiler import ToolchainProfiler
+if __name__ == '__main__':
+  ToolchainProfiler.record_process_start()
+
 import os, sys, shutil, tempfile, subprocess, shlex, time, re, logging
 from subprocess import PIPE
 from tools import shared, jsrun, system_libs
 from tools.shared import execute, suffix, unsuffixed, unsuffixed_basename, WINDOWS, safe_move
 from tools.response_file import read_response_file
+import tools.line_endings
 
 # endings = dot + a suffix, safe to test by  filename.endswith(endings)
 C_ENDINGS = ('.c', '.C', '.i')
@@ -436,6 +441,10 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
     default_object_extension = '.o'
     valid_abspaths = []
     separate_asm = False
+    cfi = False
+    # Specifies the line ending format to use for all generated text files.
+    # Defaults to using the native EOL on each platform (\r\n on Windows, \n on Linux&OSX)
+    output_eol = os.linesep
 
     def is_valid_abspath(path_name):
       # Any path that is underneath the emscripten repository root must be ok.
@@ -518,11 +527,6 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
           shrink_level = 2
           settings_changes.append('INLINING_LIMIT=25')
         opt_level = validate_arg_level(requested_level, 3, 'Invalid optimization level: ' + newargs[i])
-        # We leave the -O option in place so that the clang front-end runs in that
-        # optimization mode, but we disable the actual optimization passes, as we'll
-        # run them separately.
-        newargs.append('-mllvm')
-        newargs.append('-disable-llvm-optzns')
       elif newargs[i].startswith('--js-opts'):
         check_bad_eq(newargs[i])
         js_opts = eval(newargs[i+1])
@@ -729,6 +733,18 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
         newargs.append('-D__SSSE3__=1')
         newargs.append('-D__SSE4_1__=1')
         newargs[i] = ''
+      elif newargs[i].startswith("-fsanitize=cfi"):
+        cfi = True
+      elif newargs[i] == "--output_eol":
+        if newargs[i+1].lower() == 'windows':
+          output_eol = '\r\n'
+        elif newargs[i+1].lower() == 'linux':
+          output_eol = '\n'
+        else:
+          logging.error('Invalid value "' + newargs[i+1] + '" to --output_eol!')
+          exit(1)
+        newargs[i] = ''
+        newargs[i+1] = ''
 
     if should_exit:
       sys.exit(0)
@@ -912,7 +928,7 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
               break
           if found: break
         if found: break
-      if not found and lib not in ['GL', 'GLU', 'glut', 'm', 'c', 'SDL', 'stdc++']: # whitelist our default libraries
+      if not found and lib not in ['GL', 'GLU', 'glut', 'm', 'c', 'SDL', 'stdc++', 'pthread']: # whitelist our default libraries
         logging.warning('emcc: cannot find library "%s"', lib)
 
     # If not compiling to JS, then we are compiling to an intermediate bitcode objects or library, so
@@ -1110,9 +1126,6 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
     if proxy_to_worker or use_preload_plugins:
       shared.Settings.DEFAULT_LIBRARY_FUNCS_TO_INCLUDE += ['$Browser']
 
-    if js_opts:
-      shared.Settings.RUNNING_JS_OPTS = 1
-
     if not shared.Settings.NO_FILESYSTEM and not shared.Settings.ONLY_MY_CODE:
       shared.Settings.EXPORTED_FUNCTIONS += ['___errno_location'] # so FS can report errno back to C
       if not shared.Settings.NO_EXIT_RUNTIME:
@@ -1129,9 +1142,6 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
       js_libraries.append(shared.path_from_root('src', 'library_pthread_stub.js'))
 
     if shared.Settings.USE_PTHREADS:
-      if shared.Settings.PROXY_TO_WORKER:
-        logging.error('-s PROXY_TO_WORKER=1 is not yet supported with -s USE_PTHREADS=1!')
-        exit(1)
       if shared.Settings.LINKABLE:
         logging.error('-s LINKABLE=1 is not supported with -s USE_PTHREADS=1!')
         exit(1)
@@ -1143,6 +1153,7 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
         exit(1)
 
     if shared.Settings.WASM_BACKEND:
+      js_opts = None
       shared.Settings.BINARYEN = 1
       # Static linking is tricky with LLVM, since e.g. memset might not be used from libc,
       # but be used as an intrinsic, and codegen will generate a libc call from that intrinsic
@@ -1153,12 +1164,24 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
       # to bootstrap struct_info, we need binaryen
       os.environ['EMCC_WASM_BACKEND_BINARYEN'] = '1'
 
+    if js_opts:
+      shared.Settings.RUNNING_JS_OPTS = 1
+
     if shared.Settings.BINARYEN:
       debug_level = max(1, debug_level) # keep whitespace readable, for asm.js parser simplicity
       shared.Settings.GLOBAL_BASE = 1024 # leave some room for mapping global vars
       assert not shared.Settings.SPLIT_MEMORY, 'WebAssembly does not support split memory'
       if not shared.Settings.BINARYEN_METHOD:
         shared.Settings.BINARYEN_METHOD = 'native-wasm,interpret-binary'
+      assert not shared.Settings.INCLUDE_FULL_LIBRARY, 'The WebAssembly libc overlaps with JS libs, so INCLUDE_FULL_LIBRARY does not just work (FIXME)'
+      # if root was not specified in -s, it might be fixed in ~/.emscripten, copy from there
+      if not shared.Settings.BINARYEN_ROOT:
+        try:
+          shared.Settings.BINARYEN_ROOT = shared.BINARYEN_ROOT
+        except:
+          pass
+      if use_closure_compiler:
+        logging.warning('closure compiler is known to have issues with binaryen (FIXME)')
 
     if shared.Settings.CYBERDWARF:
       newargs.append('-g')
@@ -1177,6 +1200,17 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
 
     if shared.Settings.GLOBAL_BASE < 0:
       shared.Settings.GLOBAL_BASE = 8 # default if nothing else sets it
+
+    if shared.Settings.WASM_BACKEND:
+      if shared.Settings.SIMD:
+        newargs.append('-msimd128')
+    else:
+      # We leave the -O option in place so that the clang front-end runs in that
+      # optimization mode, but we disable the actual optimization passes, as we'll
+      # run them separately.
+      if opt_level > 0:
+        newargs.append('-mllvm')
+        newargs.append('-disable-llvm-optzns')
 
     shared.Settings.EMSCRIPTEN_VERSION = shared.EMSCRIPTEN_VERSION
     shared.Settings.OPT_LEVEL = opt_level
@@ -1229,6 +1263,8 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
       args = [call] + newargs + input_files
       if file_ending.endswith(CXX_ENDINGS):
         args += shared.EMSDK_CXX_OPTS
+      if not shared.Building.can_inline():
+        args.append('-fno-inline-functions')
       args = system_libs.process_args(args, shared.Settings)
       return args
 
@@ -1280,7 +1316,7 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
 
     log_time('bitcodeize inputs')
 
-    if not LEAVE_INPUTS_RAW:
+    if not LEAVE_INPUTS_RAW and not shared.Settings.WASM_BACKEND:
       assert len(temp_files) == len(input_files)
 
       # Optimize source files
@@ -1430,6 +1466,11 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
       else:
         # At minimum remove dead functions etc., this potentially saves a lot in the size of the generated code (and the time to compile it)
         link_opts += shared.Building.get_safe_internalize() + ['-globaldce']
+
+      if cfi:
+        if use_cxx:
+           link_opts.append("-wholeprogramdevirt")
+        link_opts.append("-lowertypetests")
 
       if AUTODEBUG:
         # let llvm opt directly emit ll, to skip writing and reading all the bitcode
@@ -1615,9 +1656,7 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
       def flush(title='js_opts'):
         JSOptimizer.queue = filter(lambda p: p not in JSOptimizer.blacklist, JSOptimizer.queue)
 
-        if shared.Settings.WASM_BACKEND:
-          logging.debug('ignoring js-optimizer passes since emitting pure wasm: ' + ' '.join(JSOptimizer.queue))
-          return
+        assert not shared.Settings.WASM_BACKEND, 'JSOptimizer should not run with pure wasm output'
 
         if JSOptimizer.extra_info is not None and len(JSOptimizer.extra_info) == 0:
           JSOptimizer.extra_info = None
@@ -1868,12 +1907,15 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
     # Move final output to the js target
     shutil.move(final, js_target)
 
+    generated_text_files_with_native_eols = [js_target]
+
     # Separate out the asm.js code, if asked. Or, if necessary for another option
     if (separate_asm or shared.Settings.BINARYEN) and not shared.Settings.WASM_BACKEND:
       logging.debug('separating asm')
-      temp_target = misc_temp_files.get(suffix='.js').name
-      subprocess.check_call([shared.PYTHON, shared.path_from_root('tools', 'separate_asm.py'), js_target, asm_target, temp_target])
-      shutil.move(temp_target, js_target)
+      with misc_temp_files.get_file(suffix='.js') as temp_target:
+        subprocess.check_call([shared.PYTHON, shared.path_from_root('tools', 'separate_asm.py'), js_target, asm_target, temp_target])
+        generated_text_files_with_native_eols += [asm_target]
+        shutil.move(temp_target, js_target)
 
       # extra only-my-code logic
       if shared.Settings.ONLY_MY_CODE:
@@ -2053,19 +2095,26 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
           xhr.send(null);
 ''' % (os.path.basename(wasm_binary_target), script_inline)
 
-      html = open(target, 'w')
+      html = open(target, 'wb')
       assert (script_src or script_inline) and not (script_src and script_inline)
       if script_src:
         script_replacement = '<script async type="text/javascript" src="%s"></script>' % script_src
       else:
         script_replacement = '<script>\n%s\n</script>' % script_inline
-      html.write(shell.replace('{{{ SCRIPT }}}', script_replacement))
+      html_contents = shell.replace('{{{ SCRIPT }}}', script_replacement)
+      html_contents = tools.line_endings.convert_line_endings(html_contents, '\n', output_eol)
+      html.write(html_contents)
       html.close()
     else: # final_suffix != html
       if proxy_to_worker:
         shutil.move(js_target, js_target[:-3] + '.worker.js') # compiler output goes in .worker.js file
         worker_target_basename = target_basename + '.worker'
-        open(target, 'w').write(open(shared.path_from_root('src', 'webGLClient.js')).read() + '\n' + open(shared.path_from_root('src', 'proxyClient.js')).read().replace('{{{ filename }}}', shared.Settings.PROXY_TO_WORKER_FILENAME or worker_target_basename).replace('{{{ IDBStore.js }}}', open(shared.path_from_root('src', 'IDBStore.js')).read()))
+        target_contents = open(shared.path_from_root('src', 'webGLClient.js')).read() + '\n' + open(shared.path_from_root('src', 'proxyClient.js')).read().replace('{{{ filename }}}', shared.Settings.PROXY_TO_WORKER_FILENAME or worker_target_basename).replace('{{{ IDBStore.js }}}', open(shared.path_from_root('src', 'IDBStore.js')).read())
+        target_contents = tools.line_endings.convert_line_endings(convert_line_endings, '\n', output_eol)
+        open(target, 'wb').write(target_contents)
+
+    for f in generated_text_files_with_native_eols:
+      tools.line_endings.convert_line_endings_in_file(f, os.linesep, output_eol)
 
     log_time('final emitting')
 
@@ -2082,3 +2131,4 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
 
 if __name__ == '__main__':
   run()
+  sys.exit(0)

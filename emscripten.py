@@ -9,6 +9,10 @@ header files (so that the JS compiler can see the constants in those
 headers, for the libc implementation in JS).
 '''
 
+from tools.toolchain_profiler import ToolchainProfiler
+if __name__ == '__main__':
+  ToolchainProfiler.record_process_start()
+
 import os, sys, json, optparse, subprocess, re, time, logging
 
 from tools import shared
@@ -97,54 +101,54 @@ def emscript(infile, settings, outfile, libraries=None, compiler_engine=None,
       shared.try_delete(outfile.name) # remove partial output
 
 def get_and_parse_backend(infile, settings, temp_files, DEBUG):
-    temp_js = temp_files.get('.4.js').name
-    backend_compiler = os.path.join(shared.LLVM_ROOT, 'llc')
-    backend_args = [backend_compiler, infile, '-march=js', '-filetype=asm', '-o', temp_js]
-    if settings['PRECISE_F32']:
-      backend_args += ['-emscripten-precise-f32']
-    if settings['USE_PTHREADS']:
-      backend_args += ['-emscripten-enable-pthreads']
-    if settings['WARN_UNALIGNED']:
-      backend_args += ['-emscripten-warn-unaligned']
-    if settings['RESERVED_FUNCTION_POINTERS'] > 0:
-      backend_args += ['-emscripten-reserved-function-pointers=%d' % settings['RESERVED_FUNCTION_POINTERS']]
-    if settings['ASSERTIONS'] > 0:
-      backend_args += ['-emscripten-assertions=%d' % settings['ASSERTIONS']]
-    if settings['ALIASING_FUNCTION_POINTERS'] == 0:
-      backend_args += ['-emscripten-no-aliasing-function-pointers']
-    if settings['EMULATED_FUNCTION_POINTERS']:
-      backend_args += ['-emscripten-emulated-function-pointers']
-    if settings['RELOCATABLE']:
-      backend_args += ['-emscripten-relocatable']
-      backend_args += ['-emscripten-global-base=0']
-    elif settings['GLOBAL_BASE'] >= 0:
-      backend_args += ['-emscripten-global-base=%d' % settings['GLOBAL_BASE']]
-    backend_args += ['-O' + str(settings['OPT_LEVEL'])]
-    if settings['DISABLE_EXCEPTION_CATCHING'] != 1:
-      backend_args += ['-enable-emscripten-cxx-exceptions']
-      if settings['DISABLE_EXCEPTION_CATCHING'] == 2:
-        backend_args += ['-emscripten-cxx-exceptions-whitelist=' + ','.join(settings['EXCEPTION_CATCHING_WHITELIST'] or ['fake'])]
-    if settings['ASYNCIFY']:
-      backend_args += ['-emscripten-asyncify']
-      backend_args += ['-emscripten-asyncify-functions=' + ','.join(settings['ASYNCIFY_FUNCTIONS'])]
-      backend_args += ['-emscripten-asyncify-whitelist=' + ','.join(settings['ASYNCIFY_WHITELIST'])]
-    if settings['NO_EXIT_RUNTIME']:
-      backend_args += ['-emscripten-no-exit-runtime']
-    if settings['BINARYEN']:
-      backend_args += ['-emscripten-wasm']
-    if settings['CYBERDWARF']:
-      backend_args += ['-enable-cyberdwarf']
+    with temp_files.get_file('.4.js') as temp_js:
+      backend_compiler = os.path.join(shared.LLVM_ROOT, 'llc')
+      backend_args = [backend_compiler, infile, '-march=js', '-filetype=asm', '-o', temp_js]
+      if settings['PRECISE_F32']:
+        backend_args += ['-emscripten-precise-f32']
+      if settings['USE_PTHREADS']:
+        backend_args += ['-emscripten-enable-pthreads']
+      if settings['WARN_UNALIGNED']:
+        backend_args += ['-emscripten-warn-unaligned']
+      if settings['RESERVED_FUNCTION_POINTERS'] > 0:
+        backend_args += ['-emscripten-reserved-function-pointers=%d' % settings['RESERVED_FUNCTION_POINTERS']]
+      if settings['ASSERTIONS'] > 0:
+        backend_args += ['-emscripten-assertions=%d' % settings['ASSERTIONS']]
+      if settings['ALIASING_FUNCTION_POINTERS'] == 0:
+        backend_args += ['-emscripten-no-aliasing-function-pointers']
+      if settings['EMULATED_FUNCTION_POINTERS']:
+        backend_args += ['-emscripten-emulated-function-pointers']
+      if settings['RELOCATABLE']:
+        backend_args += ['-emscripten-relocatable']
+        backend_args += ['-emscripten-global-base=0']
+      elif settings['GLOBAL_BASE'] >= 0:
+        backend_args += ['-emscripten-global-base=%d' % settings['GLOBAL_BASE']]
+      backend_args += ['-O' + str(settings['OPT_LEVEL'])]
+      if settings['DISABLE_EXCEPTION_CATCHING'] != 1:
+        backend_args += ['-enable-emscripten-cxx-exceptions']
+        if settings['DISABLE_EXCEPTION_CATCHING'] == 2:
+          backend_args += ['-emscripten-cxx-exceptions-whitelist=' + ','.join(settings['EXCEPTION_CATCHING_WHITELIST'] or ['fake'])]
+      if settings['ASYNCIFY']:
+        backend_args += ['-emscripten-asyncify']
+        backend_args += ['-emscripten-asyncify-functions=' + ','.join(settings['ASYNCIFY_FUNCTIONS'])]
+        backend_args += ['-emscripten-asyncify-whitelist=' + ','.join(settings['ASYNCIFY_WHITELIST'])]
+      if settings['NO_EXIT_RUNTIME']:
+        backend_args += ['-emscripten-no-exit-runtime']
+      if settings['BINARYEN']:
+        backend_args += ['-emscripten-wasm']
+      if settings['CYBERDWARF']:
+        backend_args += ['-enable-cyberdwarf']
 
-    if DEBUG:
-      logging.debug('emscript: llvm backend: ' + ' '.join(backend_args))
-      t = time.time()
-    shared.jsrun.timeout_run(subprocess.Popen(backend_args, stdout=subprocess.PIPE))
-    if DEBUG:
-      logging.debug('  emscript: llvm backend took %s seconds' % (time.time() - t))
+      if DEBUG:
+        logging.debug('emscript: llvm backend: ' + ' '.join(backend_args))
+        t = time.time()
+      shared.jsrun.timeout_run(subprocess.Popen(backend_args, stdout=subprocess.PIPE))
+      if DEBUG:
+        logging.debug('  emscript: llvm backend took %s seconds' % (time.time() - t))
 
-    # Split up output
-    backend_output = open(temp_js).read()
-    #if DEBUG: print >> sys.stderr, backend_output
+      # Split up output
+      backend_output = open(temp_js).read()
+      #if DEBUG: print >> sys.stderr, backend_output
 
     start_funcs_marker = '// EMSCRIPTEN_START_FUNCTIONS'
     end_funcs_marker = '// EMSCRIPTEN_END_FUNCTIONS'
@@ -267,19 +271,19 @@ def compiler_glue(metadata, settings, libraries, compiler_engine, temp_files, DE
     assert not (metadata['simd'] and settings['SPLIT_MEMORY']), 'SIMD is used, but not supported in SPLIT_MEMORY'
 
     # Save settings to a file to work around v8 issue 1579
-    settings_file = temp_files.get('.txt').name
-    def save_settings():
-      global settings_text
-      settings_text = json.dumps(settings, sort_keys=True)
-      s = open(settings_file, 'w')
-      s.write(settings_text)
-      s.close()
-    save_settings()
+    with temp_files.get_file('.txt') as settings_file:
+      def save_settings():
+        global settings_text
+        settings_text = json.dumps(settings, sort_keys=True)
+        s = open(settings_file, 'w')
+        s.write(settings_text)
+        s.close()
+      save_settings()
 
-    # Call js compiler
-    out = jsrun.run_js(path_from_root('src', 'compiler.js'), compiler_engine,
-                       [settings_file] + libraries, stdout=subprocess.PIPE, stderr=STDERR_FILE,
-                       cwd=path_from_root('src'), error_limit=300)
+      # Call js compiler
+      out = jsrun.run_js(path_from_root('src', 'compiler.js'), compiler_engine,
+                         [settings_file] + libraries, stdout=subprocess.PIPE, stderr=STDERR_FILE,
+                         cwd=path_from_root('src'), error_limit=300)
     assert '//FORWARDED_DATA:' in out, 'Did not receive forwarded data in pre output - process failed?'
     glue, forwarded_data = out.split('//FORWARDED_DATA:')
 
@@ -554,7 +558,7 @@ function _emscripten_asm_const_%s(%s) {
       for sig in last_forwarded_json['Functions']['tables']:
         asm_setup += '\nvar debug_table_' + sig + ' = ' + json.dumps(debug_tables[sig]) + ';'
 
-    maths = ['Math.' + func for func in ['floor', 'abs', 'sqrt', 'pow', 'cos', 'sin', 'tan', 'acos', 'asin', 'atan', 'atan2', 'exp', 'log', 'ceil', 'imul', 'min', 'clz32']]
+    maths = ['Math.' + func for func in ['floor', 'abs', 'sqrt', 'pow', 'cos', 'sin', 'tan', 'acos', 'asin', 'atan', 'atan2', 'exp', 'log', 'ceil', 'imul', 'min', 'max', 'clz32']]
     simdfloattypes = []
     simdinttypes = []
     simdbooltypes = []
@@ -579,16 +583,16 @@ function _emscripten_asm_const_%s(%s) {
       simdintfloatfuncs += ['fromInt16x8Bits']
     if metadata['simdUint32x4']:
       simdinttypes += ['Uint32x4']
-      simdintfloatfuncs += ['fromUint32x4', 'fromUint32x4Bits']
+      simdintfloatfuncs += ['fromUint32x4Bits']
     if metadata['simdInt32x4']:
       simdinttypes += ['Int32x4']
-      simdintfloatfuncs += ['fromInt32x4', 'fromInt32x4Bits']
+      simdintfloatfuncs += ['fromInt32x4Bits']
     if metadata['simdFloat32x4']:
       simdfloattypes += ['Float32x4']
-      simdintfloatfuncs += ['fromFloat32x4', 'fromFloat32x4Bits']
+      simdintfloatfuncs += ['fromFloat32x4Bits']
     if metadata['simdFloat64x2']:
       simdfloattypes += ['Float64x2']
-      simdintfloatfuncs += ['fromFloat64x2', 'fromFloat64x2Bits']
+      simdintfloatfuncs += ['fromFloat64x2Bits']
     if metadata['simdBool8x16']:
       simdbooltypes += ['Bool8x16']
     if metadata['simdBool16x8']:
@@ -833,6 +837,19 @@ function ftCall_%s(%s) {%s
       simd_bool_symbols = ['  var SIMD_' + ty + '_' + g + '=SIMD_' + ty + access_quote(g) + ';\n' for ty in simdbooltypes for g in simdboolfuncs]
       simd_bool_symbols = filter(lambda x: not string_contains_any(x, nonexisting_simd_symbols), simd_bool_symbols)
       asm_global_funcs += ''.join(simd_bool_symbols)
+
+      # SIMD conversions (not bitcasts) between same lane sizes:
+      def add_simd_cast(dst, src):
+        return '  var SIMD_' + dst + '_from' + src + '=SIMD_' + dst + '.from' + src + ';\n'
+      def add_simd_casts(t1, t2):
+        return add_simd_cast(t1, t2) + add_simd_cast(t2, t1)
+      if metadata['simdInt8x16'] and metadata['simdUint8x16']: asm_global_funcs += add_simd_casts('Int8x16', 'Uint8x16')
+      if metadata['simdInt16x8'] and metadata['simdUint16x8']: asm_global_funcs += add_simd_casts('Int16x8', 'Uint16x8')
+      if metadata['simdInt32x4'] and metadata['simdUint32x4']: asm_global_funcs += add_simd_casts('Int32x4', 'Uint32x4')
+      if metadata['simdInt32x4'] and metadata['simdFloat32x4']: asm_global_funcs += add_simd_casts('Int32x4', 'Float32x4')
+      if metadata['simdUint32x4'] and metadata['simdFloat32x4']: asm_global_funcs += add_simd_casts('Uint32x4', 'Float32x4')
+      if metadata['simdInt32x4'] and metadata['simdFloat64x2']: asm_global_funcs += add_simd_cast('Int32x4', 'Float64x2') # Unofficial, needed for emscripten_int32x4_fromFloat64x2
+      if metadata['simdUint32x4'] and metadata['simdFloat64x2']: asm_global_funcs += add_simd_cast('Uint32x4', 'Float64x2') # Unofficial, needed for emscripten_uint32x4_fromFloat64x2
 
       # Unofficial, Bool64x2 does not yet exist, but needed for Float64x2 comparisons.
       if metadata['simdFloat64x2']:
@@ -1292,31 +1309,47 @@ def emscript_wasm_backend(infile, settings, outfile, libraries=None, compiler_en
 
   if libraries is None: libraries = []
 
-  temp_s = temp_files.get('.wb.s').name
-  backend_compiler = os.path.join(shared.LLVM_ROOT, 'llc')
-  backend_args = [backend_compiler, infile, '-march=wasm32', '-filetype=asm', '-o', temp_s]
-  backend_args += ['-thread-model=single'] # no threads support in backend, tell llc to not emit atomics
-  if DEBUG:
-    logging.debug('emscript: llvm wasm backend: ' + ' '.join(backend_args))
-    t = time.time()
-  shared.check_call(backend_args)
-  if DEBUG:
-    logging.debug('  emscript: llvm wasm backend took %s seconds' % (time.time() - t))
-    t = time.time()
-    import shutil
-    shutil.copyfile(temp_s, os.path.join(shared.CANONICAL_TEMP_DIR, 'emcc-llvm-backend-output.s'))
+  with temp_files.get_file('.wb.s') as temp_s:
+    backend_compiler = os.path.join(shared.LLVM_ROOT, 'llc')
+    backend_args = [backend_compiler, infile, '-march=wasm32', '-filetype=asm',
+                    '-asm-verbose=false',
+                    '-o', temp_s]
+    backend_args += ['-thread-model=single'] # no threads support in backend, tell llc to not emit atomics
+    # disable slow and relatively unimportant optimization passes
+    backend_args += ['-combiner-alias-analysis=false', '-combiner-global-alias-analysis=false']
 
-  assert shared.Settings.BINARYEN_ROOT, 'need BINARYEN_ROOT config set so we can use Binaryen s2wasm on the backend output'
-  wasm = outfile.name[:-3] + '.wast'
-  s2wasm_args = [os.path.join(shared.Settings.BINARYEN_ROOT, 'bin', 's2wasm'), temp_s]
-  s2wasm_args += ['--emscripten-glue']
-  s2wasm_args += ['--global-base=%d' % shared.Settings.GLOBAL_BASE]
-  s2wasm_args += ['--initial-memory=%d' % shared.Settings.TOTAL_MEMORY]
-  if DEBUG:
-    logging.debug('emscript: binaryen s2wasm: ' + ' '.join(s2wasm_args))
-    t = time.time()
-    #s2wasm_args += ['--debug']
-  shared.check_call(s2wasm_args, stdout=open(wasm, 'w'))
+    # asm.js-style exception handling
+    if settings['DISABLE_EXCEPTION_CATCHING'] != 1:
+      backend_args += ['-enable-emscripten-cxx-exceptions']
+    if settings['DISABLE_EXCEPTION_CATCHING'] == 2:
+      whitelist = ','.join(settings['EXCEPTION_CATCHING_WHITELIST'] or ['__fake'])
+      backend_args += ['-emscripten-cxx-exceptions-whitelist=' + whitelist]
+
+    if DEBUG:
+      logging.debug('emscript: llvm wasm backend: ' + ' '.join(backend_args))
+      t = time.time()
+    shared.check_call(backend_args)
+    if DEBUG:
+      logging.debug('  emscript: llvm wasm backend took %s seconds' % (time.time() - t))
+      t = time.time()
+      import shutil
+      shutil.copyfile(temp_s, os.path.join(shared.CANONICAL_TEMP_DIR, 'emcc-llvm-backend-output.s'))
+
+    assert shared.Settings.BINARYEN_ROOT, 'need BINARYEN_ROOT config set so we can use Binaryen s2wasm on the backend output'
+    wasm = outfile.name[:-3] + '.wast'
+    s2wasm_args = [os.path.join(shared.Settings.BINARYEN_ROOT, 'bin', 's2wasm'), temp_s]
+    s2wasm_args += ['--emscripten-glue']
+    s2wasm_args += ['--global-base=%d' % shared.Settings.GLOBAL_BASE]
+    s2wasm_args += ['--initial-memory=%d' % shared.Settings.TOTAL_MEMORY]
+    def compiler_rt_fail(): raise Exception('Expected wasm_compiler_rt.a to already be built')
+    compiler_rt_lib = shared.Cache.get('wasm_compiler_rt.a', lambda: compiler_rt_fail(), 'a')
+    s2wasm_args += ['-l', compiler_rt_lib]
+    if DEBUG:
+      logging.debug('emscript: binaryen s2wasm: ' + ' '.join(s2wasm_args))
+      t = time.time()
+      #s2wasm_args += ['--debug']
+    shared.check_call(s2wasm_args, stdout=open(wasm, 'w'))
+
   if DEBUG:
     logging.debug('  emscript: binaryen s2wasm took %s seconds' % (time.time() - t))
     t = time.time()
@@ -1368,16 +1401,21 @@ def emscript_wasm_backend(infile, settings, outfile, libraries=None, compiler_en
   for line in open(wasm).readlines():
     if line.startswith('  (import '):
       parts = line.split(' ')
-      metadata['declares'].append(parts[3][1:])
+      # Don't include Invoke wrapper names (for asm.js-style exception handling)
+      # in metadata[declares], the invoke wrappers will be generated in
+      # this script later.
+      func_name = parts[3][1:]
+      if not func_name.startswith('invoke_'):
+        metadata['declares'].append(func_name)
     elif line.startswith('  (func '):
       parts = line.split(' ')
-      func = parts[3][1:]
-      metadata['implementedFunctions'].append(func)
+      func_name = parts[3][1:]
+      metadata['implementedFunctions'].append(func_name)
     elif line.startswith('  (export '):
       parts = line.split(' ')
-      exportname = parts[3][1:-1]
-      assert asmjs_mangle(exportname) not in metadata['exports']
-      metadata['exports'].append(exportname)
+      export_name = parts[3][1:-1]
+      assert asmjs_mangle(export_name) not in metadata['exports']
+      metadata['exports'].append(export_name)
 
   metadata['declares'] = filter(lambda x: not x.startswith('emscripten_asm_const'), metadata['declares']) # we emit those ourselves
 
@@ -1396,20 +1434,20 @@ def emscript_wasm_backend(infile, settings, outfile, libraries=None, compiler_en
   settings['IMPLEMENTED_FUNCTIONS'] = metadata['implementedFunctions']
 
   # Save settings to a file to work around v8 issue 1579
-  settings_file = temp_files.get('.txt').name
-  def save_settings():
-    global settings_text
-    settings_text = json.dumps(settings, sort_keys=True)
-    s = open(settings_file, 'w')
-    s.write(settings_text)
-    s.close()
-  save_settings()
+  with temp_files.get_file('.txt') as settings_file:
+    def save_settings():
+      global settings_text
+      settings_text = json.dumps(settings, sort_keys=True)
+      s = open(settings_file, 'w')
+      s.write(settings_text)
+      s.close()
+    save_settings()
 
-  # Call js compiler
-  if DEBUG: t = time.time()
-  out = jsrun.run_js(path_from_root('src', 'compiler.js'), compiler_engine,
-                     [settings_file] + libraries, stdout=subprocess.PIPE, stderr=STDERR_FILE,
-                     cwd=path_from_root('src'), error_limit=300)
+    # Call js compiler
+    if DEBUG: t = time.time()
+    out = jsrun.run_js(path_from_root('src', 'compiler.js'), compiler_engine,
+                       [settings_file] + libraries, stdout=subprocess.PIPE, stderr=STDERR_FILE,
+                       cwd=path_from_root('src'), error_limit=300)
   assert '//FORWARDED_DATA:' in out, 'Did not receive forwarded data in pre output - process failed?'
   glue, forwarded_data = out.split('//FORWARDED_DATA:')
 
@@ -1512,6 +1550,18 @@ return ASM_CONSTS[code](%s);
   basic_vars = ['STACKTOP', 'STACK_MAX', 'ABORT']
   basic_float_vars = []
 
+  # Asm.js-style exception handling: invoke wrapper generation
+  invoke_wrappers = ''
+  with open(wasm) as f:
+    for line in f:
+      if line.startswith('  (import '):
+        parts = line.split(' ')
+        func_name = parts[3][1:]
+        if func_name.startswith('invoke_'):
+          sig = func_name[len('invoke_'):]
+          invoke_wrappers += '\n' + shared.JS.make_invoke(sig) + '\n'
+          basic_funcs.append(func_name)
+
   # sent data
   the_global = '{}'
   sending = '{ ' + ', '.join(['"' + math_fix(s) + '": ' + s for s in basic_funcs + global_funcs + basic_vars + basic_float_vars + global_vars]) + ' }'
@@ -1568,6 +1618,8 @@ Runtime.establishStackSpace = asm['establishStackSpace'];
 Runtime.setTempRet0 = asm['setTempRet0'];
 Runtime.getTempRet0 = asm['getTempRet0'];
 ''')
+
+  funcs_js.append(invoke_wrappers)
 
   for i in range(len(funcs_js)): # do this loop carefully to save memory
     if WINDOWS: funcs_js[i] = funcs_js[i].replace('\r\n', '\n') # Normalize to UNIX line endings, otherwise writing to text file will duplicate \r\n to \r\r\n!
@@ -1708,3 +1760,4 @@ WARNING: You should normally never use this! Use emcc instead.
 
 if __name__ == '__main__':
   _main()
+  sys.exit(0)

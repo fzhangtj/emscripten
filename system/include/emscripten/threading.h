@@ -102,6 +102,7 @@ typedef struct em_queued_call
 } em_queued_call;
 
 void emscripten_sync_run_in_main_thread(em_queued_call *call);
+void *emscripten_sync_run_in_main_thread_0(int function);
 void *emscripten_sync_run_in_main_thread_1(int function, void *arg1);
 void *emscripten_sync_run_in_main_thread_2(int function, void *arg1, void *arg2);
 void *emscripten_sync_run_in_main_thread_3(int function, void *arg1, void *arg2, void *arg3);
@@ -146,6 +147,15 @@ void emscripten_conditional_set_current_thread_status(EM_THREAD_STATUS expectedS
 // The name parameter is a UTF-8 encoded string which is truncated to 32 bytes.
 // When thread profiler is not enabled (not building with --threadprofiling), this is a no-op.
 void emscripten_set_thread_name(pthread_t threadId, const char *name);
+
+// Gets the stored pointer to a string representing the canvases to transfer to the created thread.
+int emscripten_pthread_attr_gettransferredcanvases(const pthread_attr_t *a, const char **str);
+
+// Specifies a comma-delimited list of canvas DOM element IDs to transfer to the thread to be created.
+// Note: this pointer is weakly stored (not copied) to the given pthread_attr_t, so must be held alive until
+// pthread_create() has been called. If 0 or "", no canvases are transferred. The special value "#canvas" denotes
+// the element stored in Module.canvas.
+int emscripten_pthread_attr_settransferredcanvases(pthread_attr_t *a, const char *str);
 
 struct thread_profiler_block
 {

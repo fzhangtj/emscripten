@@ -5,6 +5,39 @@ import glob
 import tools.shared
 from tools.shared import *
 from runner import RunnerCore, path_from_root, get_zlib_library, get_bullet_library
+import tools.line_endings
+
+# Runs an emcc task (used from another process in test test_emcc_multiprocess_cache_access, needs to be at top level for it to be pickleable).
+def multiprocess_task(c_file, cache_dir_name):
+  output = subprocess.check_output([PYTHON, EMCC, c_file, '--cache', cache_dir_name], stderr=subprocess.STDOUT)
+  if len(output.strip()) > 0:
+    print '------'
+    print output
+    print '------'
+  sys.exit(1 if 'generating system library: libc.bc' in output else 0)
+
+class clean_write_access_to_canonical_temp_dir:
+  def clean_emcc_files_in_temp_dir(self):
+    for x in os.listdir(CANONICAL_TEMP_DIR):
+      if x.startswith('emcc-') or x.startswith('a.out'):
+        os.unlink(os.path.join(CANONICAL_TEMP_DIR, x))
+
+  def __enter__(self):
+    self.CANONICAL_TEMP_DIR_exists = os.path.exists(CANONICAL_TEMP_DIR)
+    if not self.CANONICAL_TEMP_DIR_exists:
+      os.makedirs(CANONICAL_TEMP_DIR)
+    else:
+      # Delete earlier files in the canonical temp directory so that
+      # previous leftover files don't have a possibility of confusing
+      # the test result e.g. on failure of the actual task
+      self.clean_emcc_files_in_temp_dir()
+
+  def __exit__(self, type, value, traceback):
+    if not self.CANONICAL_TEMP_DIR_exists:
+      try_delete(CANONICAL_TEMP_DIR)
+      pass
+    else:
+      self.clean_emcc_files_in_temp_dir()
 
 class other(RunnerCore):
   def test_emcc(self):
@@ -116,6 +149,7 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
           os.chdir(os.path.dirname(path))
           self.assertContained('hello, world!', run_js(os.path.basename(path)))
           os.chdir(last)
+          try_delete(path)
       finally:
         os.chdir(self.get_dir())
       self.clear()
@@ -310,6 +344,38 @@ f.close()
       else:
         os.environ['EMCC_FAST_COMPILER'] = old_fastcomp
     self.assertFalse(os.path.exists('a.out.js'))
+
+  # Test that if multiple processes attempt to access or build stuff to the cache on demand, that exactly one of the processes
+  # will, and the other processes will block to wait until that process finishes.
+  def test_emcc_multiprocess_cache_access(self):
+    tempdirname = tempfile.mkdtemp(prefix='emscripten_test_emcache_', dir=TEMP_DIR)
+    prev_cwd = os.getcwd()
+    try:
+      os.chdir(tempdirname)
+      c_file = os.path.join(tempdirname, 'test.c')
+      open(c_file, 'w').write(r'''
+        #include <stdio.h>
+        int main() {
+          printf("hello, world!\n");
+          return 0;
+        }
+        ''')
+      cache_dir_name = os.path.join(tempdirname, 'emscripten_cache')
+      tasks = []
+      num_times_libc_was_built = 0
+      for i in range(3):
+        p = multiprocessing.Process(target=multiprocess_task, args=(c_file,cache_dir_name,))
+        p.start()
+        tasks += [p]
+      for p in tasks:
+        p.join()
+        num_times_libc_was_built += p.exitcode
+      assert os.path.exists(cache_dir_name), 'The cache directory %s must exist after the build' % cache_dir_name
+      assert os.path.exists(os.path.join(cache_dir_name, 'asmjs', 'libc.bc')), 'The cache directory must contain a built libc'
+      assert num_times_libc_was_built == 1, 'Exactly one child process should have triggered libc build! (instead %d processes did)' % num_times_libc_was_built
+    finally:
+      os.chdir(prev_cwd) # On Windows, we can't have CWD in the directory we're deleting
+      try_delete(tempdirname)
 
   def test_emcc_cache_flag(self):
     tempdirname = tempfile.mkdtemp(prefix='emscripten_test_emcache_', dir=TEMP_DIR)
@@ -1944,33 +2010,31 @@ int f() {
 
   def test_emcc_debug_files(self):
     if os.environ.get('EMCC_DEBUG'): return self.skip('cannot run in debug mode')
-    if not os.path.exists(CANONICAL_TEMP_DIR):
-      os.makedirs(CANONICAL_TEMP_DIR)
+
     for opts in [0, 1, 2, 3]:
       for debug in [None, '1', '2']:
         print opts, debug
         try:
           if debug: os.environ['EMCC_DEBUG'] = debug
-          for x in os.listdir(CANONICAL_TEMP_DIR):
-            if x.startswith('emcc-'):
-              os.unlink(os.path.join(CANONICAL_TEMP_DIR, x))
-          check_execute([PYTHON, EMCC, path_from_root('tests', 'hello_world.cpp'), '-O'+ str(opts)], stderr=PIPE)
-          if debug is None:
-            for x in os.listdir(CANONICAL_TEMP_DIR):
-              if x.startswith('emcc-'):
-                assert 0
-          elif debug == '1':
-            assert os.path.exists(os.path.join(CANONICAL_TEMP_DIR, 'emcc-0-linktime.bc'))
-            assert os.path.exists(os.path.join(CANONICAL_TEMP_DIR, 'emcc-1-original.js'))
-          elif debug == '2':
-            assert os.path.exists(os.path.join(CANONICAL_TEMP_DIR, 'emcc-0-basebc.bc'))
-            assert os.path.exists(os.path.join(CANONICAL_TEMP_DIR, 'emcc-1-linktime.bc'))
-            assert os.path.exists(os.path.join(CANONICAL_TEMP_DIR, 'emcc-2-original.js'))
+          with clean_write_access_to_canonical_temp_dir():
+            check_execute([PYTHON, EMCC, path_from_root('tests', 'hello_world.cpp'), '-O'+ str(opts)], stderr=PIPE)
+            if debug is None:
+              for x in os.listdir(CANONICAL_TEMP_DIR):
+                if x.startswith('emcc-'):
+                  assert 0
+            elif debug == '1':
+              assert os.path.exists(os.path.join(CANONICAL_TEMP_DIR, 'emcc-0-linktime.bc'))
+              assert os.path.exists(os.path.join(CANONICAL_TEMP_DIR, 'emcc-1-original.js'))
+            elif debug == '2':
+              assert os.path.exists(os.path.join(CANONICAL_TEMP_DIR, 'emcc-0-basebc.bc'))
+              assert os.path.exists(os.path.join(CANONICAL_TEMP_DIR, 'emcc-1-linktime.bc'))
+              assert os.path.exists(os.path.join(CANONICAL_TEMP_DIR, 'emcc-2-original.js'))
         finally:
           if debug: del os.environ['EMCC_DEBUG']
 
   def test_debuginfo(self):
     if os.environ.get('EMCC_DEBUG'): return self.skip('cannot run in debug mode')
+
     try:
       os.environ['EMCC_DEBUG'] = '1'
       for args, expect_llvm, expect_js in [
@@ -1984,13 +2048,17 @@ int f() {
           (['-O2', '-g4'], True, True), # drop llvm debug info as js opts kill it anyway
         ]:
         print args, expect_llvm, expect_js
-        output, err = Popen([PYTHON, EMCC, path_from_root('tests', 'hello_world.cpp')] + args, stdout=PIPE, stderr=PIPE).communicate()
+        with clean_write_access_to_canonical_temp_dir():
+          output, err = Popen([PYTHON, EMCC, path_from_root('tests', 'hello_world.cpp')] + args, stdout=PIPE, stderr=PIPE).communicate()
         assert expect_llvm == ('strip-debug' not in err)
         assert expect_js == ('registerize' not in err)
     finally:
       del os.environ['EMCC_DEBUG']
 
   def test_scons(self): # also incidentally tests c++11 integration in llvm 3.1
+    scons_path = Building.which('scons')
+    if not scons_path:
+      return self.skip('Skipping other.test_scons: The tool "scons" was not found in PATH!')
     try_delete(os.path.join(self.get_dir(), 'test'))
     shutil.copytree(path_from_root('tests', 'scons'), os.path.join(self.get_dir(), 'test'))
     shutil.copytree(path_from_root('tools', 'scons', 'site_scons'), os.path.join(self.get_dir(), 'test', 'site_scons'))
@@ -2696,7 +2764,8 @@ int main(int argc, char **argv) {
           (['-O3'], 'LLVM opts: -O3'),
         ]:
         print args, expect
-        output, err = Popen([PYTHON, EMCC, path_from_root('tests', 'hello_world.cpp')] + args, stdout=PIPE, stderr=PIPE).communicate()
+        with clean_write_access_to_canonical_temp_dir():
+          output, err = Popen([PYTHON, EMCC, path_from_root('tests', 'hello_world.cpp')] + args, stdout=PIPE, stderr=PIPE).communicate()
         self.assertContained(expect, err)
         if '-O3' in args or '-Oz' in args or '-Os' in args:
           self.assertContained('registerizeHarder', err)
@@ -2843,6 +2912,9 @@ int main()
         assert ('''unexpected argument type float at index 1 in call to 'doit', should be i32''' in stderr) == asserts, stderr
 
   def test_llvm_lit(self):
+    grep_path = Building.which('grep')
+    if not grep_path:
+      return self.skip('Skipping other.test_llvm_lit: This test needs the "grep" tool in PATH. If you are using emsdk on Windows, you can obtain it via installing and activating the gnu package.')
     llvm_src = get_fastcomp_src_dir()
     LLVM_LIT = os.path.join(LLVM_ROOT, 'llvm-lit.py')
     if not os.path.exists(LLVM_LIT):
@@ -4761,7 +4833,8 @@ int main(void) {
       try:
         os.environ['EMCC_DEBUG'] = '1'
         os.environ['EMCC_NATIVE_OPTIMIZER'] = '1'
-        out, err = Popen([PYTHON, EMCC, path_from_root('tests', 'hello_world.c'), '-O2',] + args, stderr=PIPE).communicate()
+        with clean_write_access_to_canonical_temp_dir():
+          out, err = Popen([PYTHON, EMCC, path_from_root('tests', 'hello_world.c'), '-O2',] + args, stderr=PIPE).communicate()
       finally:
         if old_debug: os.environ['EMCC_DEBUG'] = old_debug
         else: del os.environ['EMCC_DEBUG']
@@ -5484,6 +5557,38 @@ main(int argc, char **argv)
     Popen([PYTHON, EMCC, 'src.c', '--embed-file', 'boot']).communicate()
     self.assertContained('Resolved: /boot/README.txt', run_js('a.out.js'))
 
+  def test_realpath_nodefs(self):
+    open('src.c', 'w').write(r'''
+#include <stdlib.h>
+#include <stdio.h>
+#include <errno.h>
+#include <emscripten.h>
+
+#define TEST_PATH "/working/TEST_NODEFS.txt"
+
+int
+main(int argc, char **argv)
+{
+  errno = 0;
+  EM_ASM({
+    FS.mkdir('/working');
+    FS.mount(NODEFS, { root: '.' }, '/working');
+  });
+  char *t_realpath_buf = realpath(TEST_PATH, NULL);
+  if (NULL == t_realpath_buf) {
+    perror("Resolve failed");
+    return 1;
+  } else {
+    printf("Resolved: %s", t_realpath_buf);
+    free(t_realpath_buf);
+    return 0;
+  }
+}
+''')
+    open('TEST_NODEFS.txt', 'w').write(' ')
+    Popen([PYTHON, EMCC, 'src.c']).communicate()
+    self.assertContained('Resolved: /working/TEST_NODEFS.txt', run_js('a.out.js'))
+
   def test_realpath_2(self):
     open('src.c', 'w').write(r'''
 #include <stdlib.h>
@@ -6144,7 +6249,8 @@ struct C {
 C c;
 int main() {}
       ''')
-      out, err = Popen([PYTHON, EMCC, 'src.cpp', '-Oz'], stderr=PIPE).communicate()
+      with clean_write_access_to_canonical_temp_dir():
+        out, err = Popen([PYTHON, EMCC, 'src.cpp', '-Oz'], stderr=PIPE).communicate()
       self.assertContained('___syscall54', err) # the failing call should be mentioned
       self.assertContained('ctorEval.js', err) # with a stack trace
       self.assertContained('ctor_evaller: not successful', err) # with logging
@@ -6316,7 +6422,7 @@ int main() {}
       tools.duplicate_function_eliminator.run(output_file)
 
       # Run last opts
-      tools.shared.safe_copy(tools.js_optimizer.run(output_file, ['last', 'asm']), output_file)
+      shutil.move(tools.js_optimizer.run(output_file, ['last', 'asm']), output_file)
       output_file_contents = self.get_file_contents(output_file)
 
       # Compare
@@ -6384,3 +6490,40 @@ int main() {
     
     stdout, stderr = Popen([PYTHON, EMCC, '-Wall', '-std=c++14', 'src_tmp_fixed_lang'], stderr=PIPE).communicate()
     self.assertContained("Input file has an unknown suffix, don't know what to do with it!", stderr)
+
+  def test_disable_inlining(self):
+    open('test.c', 'w').write(r'''
+#include <stdio.h>
+
+void foo() {
+  printf("foo\n");
+}
+
+int main() {
+  foo();
+  return 0;
+}
+''')
+    # Without the 'INLINING_LIMIT=1', -O2 inlines foo()
+    check_execute([PYTHON, EMCC, 'test.c', '-O2', '-o', 'test.bc', '-s', 'INLINING_LIMIT=1'])
+    # If foo() had been wrongly inlined above, internalizing foo and running
+    # global DCE makes foo DCE'd
+    Building.llvm_opt('test.bc', ['-internalize', '-internalize-public-api-list=main', '-globaldce'], 'test.bc')
+
+    # To this test to be successful, foo() shouldn't have been inlined above and
+    # foo() should be in the function list
+    syms = Building.llvm_nm('test.bc', include_internal=True)
+    assert 'foo' in syms.defs, 'foo() should not be inlined'
+    try_delete('test.c')
+    try_delete('test.bc')
+
+  def test_output_eol(self):
+    for params in [[], ['--separate-asm']]:
+      for eol in ['windows', 'linux']:
+        Popen([PYTHON, EMCC, path_from_root('tests', 'hello_world.c'), '-o', 'a.html', '--output_eol', eol] + params).communicate()
+        for f in ['a.html', 'a.js', 'a.asm.js']:
+          if os.path.isfile(f):
+            print str(params) + ' ' + eol + ' ' + f
+            ret = tools.line_endings.check_line_endings(f, expect_only_specific_line_endings='\n' if eol == 'linux' else '\r\n')
+            assert ret == 0
+

@@ -1,3 +1,4 @@
+from toolchain_profiler import ToolchainProfiler
 import shutil, time, os, sys, json, tempfile, copy, shlex, atexit, subprocess, hashlib, cPickle, re, errno
 from subprocess import Popen, PIPE, STDOUT
 from tempfile import mkstemp
@@ -676,6 +677,7 @@ def get_clang_native_env():
 
     env['INCLUDE'] = os.path.join(visual_studio_2013_path, 'VC\\INCLUDE')
     env['LIB'] = os.path.join(visual_studio_2013_path, 'VC\\LIB\\amd64') + ';' + os.path.join(windows_sdk_dir, 'lib\\winv6.3\\um\\x64')
+    env['PATH'] = env['PATH'] + ';' + os.path.join(visual_studio_2013_path, 'VC\\BIN')
 
   # Current configuration above is all Visual Studio -specific, so on non-Windowses, no action needed.
 
@@ -877,14 +879,18 @@ try:
   COMPILER_OPTS # Can be set in EM_CONFIG, optionally
 except:
   COMPILER_OPTS = []
+
+# Set the LIBCPP ABI version to at least 2 so that we get nicely aligned string
+# data and other nice fixes.
 COMPILER_OPTS = COMPILER_OPTS + [#'-fno-threadsafe-statics', # disabled due to issue 1289
                                  '-target', get_llvm_target(),
                                  '-D__EMSCRIPTEN_major__=' + str(EMSCRIPTEN_VERSION_MAJOR),
                                  '-D__EMSCRIPTEN_minor__=' + str(EMSCRIPTEN_VERSION_MINOR),
-                                 '-D__EMSCRIPTEN_tiny__=' + str(EMSCRIPTEN_VERSION_TINY)]
+                                 '-D__EMSCRIPTEN_tiny__=' + str(EMSCRIPTEN_VERSION_TINY),
+                                 '-D_LIBCPP_ABI_VERSION=2']
 
 if LLVM_TARGET == WASM_TARGET:
-  # wasm target does not automatically define emscripten stuff, so do it here
+  # wasm target does not automatically define emscripten stuff, so do it here.
   COMPILER_OPTS = COMPILER_OPTS + ['-DEMSCRIPTEN',
                                    '-D__EMSCRIPTEN__']
 
@@ -1531,6 +1537,12 @@ class Building:
 
       response_fh = open(response_file, 'w')
       for arg in actual_files:
+        # Starting from LLVM 3.9.0 trunk around July 2016, LLVM escapes backslashes in response files, so Windows paths
+        # "c:\path\to\file.txt" with single slashes no longer work. LLVM upstream dev 3.9.0 from January 2016 still treated
+        # backslashes without escaping. To preserve compatibility with both versions of llvm-link, don't pass backslash
+        # path delimiters at all to response files, but always use forward slashes.
+        if WINDOWS: arg = arg.replace('\\', '/')
+
         # escaped double quotes allows 'space' characters in pathname the response file can use
         response_fh.write("\"" + arg + "\"\n")
       response_fh.close()
@@ -1616,7 +1628,7 @@ class Building:
   nm_cache = {} # cache results of nm - it can be slow to run
 
   @staticmethod
-  def llvm_nm(filename, stdout=PIPE, stderr=None):
+  def llvm_nm(filename, stdout=PIPE, stderr=None, include_internal=False):
     if filename in Building.nm_cache:
       #logging.debug('loading nm results for %s from cache' % filename)
       return Building.nm_cache[filename]
@@ -1639,9 +1651,10 @@ class Building:
           ret.undefs.append(symbol)
         elif status == 'C':
           ret.commons.append(symbol)
-        elif status == status.upper(): # all other uppercase statuses ('T', etc.) are normally defined symbols
+        elif (not include_internal and status == status.upper()) or \
+             (    include_internal and status in ['W', 't', 'T', 'd', 'D']): # FIXME: using WTD in the previous line fails due to llvm-nm behavior on OS X,
+                                                                             #        so for now we assume all uppercase are normally defined external symbols
           ret.defs.append(symbol)
-        # otherwise, not something we should notice
     ret.defs = set(ret.defs)
     ret.undefs = set(ret.undefs)
     ret.commons = set(ret.commons)

@@ -305,10 +305,14 @@ var ASYNCIFY_WHITELIST = ['qsort',   // Functions in this list are never conside
                           '__fwritex',
                           'MUSL_vfprintf'];
 
-var EXPORTED_RUNTIME_METHODS = [ // Methods that are exported on Module. By default we export quite a bit, you can reduce this list to lower your code size,
+var EXPORTED_RUNTIME_METHODS = [ // Runtime elements that are exported on Module. By default we export quite a bit, you can reduce this list to lower your code size,
                                  // especially when closure is run (exporting prevents closure from eliminating code)
                                  // Note that methods on this list are only exported if they are included (either automatically from linking, or due to being
                                  // in DEFAULT_LIBRARY_FUNCS_TO_INCLUDE)
+                                 // Note that the name may be slightly misleading, as this
+                                 // is for any JS library element, and not just
+                                 // methods. For example, we export the Runtime object
+                                 // by having "Runtime" in this list.
   'FS_createFolder',
   'FS_createPath',
   'FS_createDataFile',
@@ -404,13 +408,17 @@ var OPT_LEVEL = 0;           // this will contain the optimization level (-Ox). 
 var DEBUG_LEVEL = 0;         // this will contain the debug level (-gx). you should not modify it.
 
 
-// JS library functions (C functions implemented in JS)
+// JS library elements (C functions implemented in JS)
 // that we include by default. If you want to make sure
 // something is included by the JS compiler, add it here.
 // For example, if you do not use some emscripten_*
 // C API call from C, but you want to call it from JS,
 // add it here (and in EXPORTED FUNCTIONS with prefix
 // "_", if you use closure compiler).
+// Note that the name may be slightly misleading, as this
+// is for any JS library element, and not just
+// functions. For example, you can include the Browser
+// object by adding "$Browser" to this list.
 var DEFAULT_LIBRARY_FUNCS_TO_INCLUDE = ['memcpy', 'memset', 'malloc', 'free'];
 
 var LIBRARY_DEPS_TO_AUTOEXPORT = ['memcpy']; // This list is also used to determine
@@ -745,5 +753,11 @@ var EVAL_CTORS = 0; // This tries to evaluate global ctors at compile-time, appl
 var CYBERDWARF = 0; // see http://kripken.github.io/emscripten-site/docs/debugging/CyberDWARF.html
 
 var BUNDLED_CD_DEBUG_FILE = ""; // Path to the CyberDWARF debug file passed to the compiler
+
+var TEXTDECODER = 1; // Is enabled, use the JavaScript TextDecoder API for string marshalling.
+                     // Enabled by default, set this to 0 to disable.
+var OFFSCREENCANVAS_SUPPORT = 0; // If set to 1, enables support for transferring canvases to pthreads and creating WebGL contexts in them,
+                                 // as well as explicit swap control for GL contexts. This needs browser support for the OffscreenCanvas
+                                 // specification.
 
 // Reserved: variables containing POINTER_MASKING.

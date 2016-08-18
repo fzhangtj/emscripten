@@ -1,4 +1,8 @@
 
+from toolchain_profiler import ToolchainProfiler
+if __name__ == '__main__':
+  ToolchainProfiler.record_process_start()
+
 import os, sys, subprocess, multiprocessing, re, string, json, shutil, logging
 import shared
 
@@ -227,18 +231,18 @@ class Minifier:
     else:
       self.globs = []
 
-    temp_file = temp_files.get('.minifyglobals.js').name
-    f = open(temp_file, 'w')
-    f.write(shell)
-    f.write('\n')
-    f.write('// EXTRA_INFO:' + json.dumps(self.serialize()))
-    f.close()
+    with temp_files.get_file('.minifyglobals.js') as temp_file:
+      f = open(temp_file, 'w')
+      f.write(shell)
+      f.write('\n')
+      f.write('// EXTRA_INFO:' + json.dumps(self.serialize()))
+      f.close()
 
-    output = subprocess.Popen(self.js_engine +
-        [JS_OPTIMIZER, temp_file, 'minifyGlobals', 'noPrintMetadata'] +
-        (['minifyWhitespace'] if minify_whitespace else []) +
-        (['--debug'] if source_map else []),
-        stdout=subprocess.PIPE).communicate()[0]
+      output = subprocess.Popen(self.js_engine +
+          [JS_OPTIMIZER, temp_file, 'minifyGlobals', 'noPrintMetadata'] +
+          (['minifyWhitespace'] if minify_whitespace else []) +
+          (['--debug'] if source_map else []),
+          stdout=subprocess.PIPE).communicate()[0]
 
     assert len(output) > 0 and not output.startswith('Assertion failed'), 'Error in js optimizer: ' + output
     #print >> sys.stderr, "minified SHELL 3333333333333333", output, "\n44444444444444444444"
@@ -444,8 +448,14 @@ EMSCRIPTEN_FUNCS();
       if DEBUG: print >> sys.stderr, 'splitting up js optimization into %d chunks, using %d cores  (total: %.2f MB)' % (len(chunks), cores, total_size/(1024*1024.))
       pool = multiprocessing.Pool(processes=cores)
       filenames = pool.map(run_on_chunk, commands, chunksize=1)
-      pool.terminate()
-      pool.join()
+      try:
+        # Shut down the pool, since otherwise processes are left alive and would only be lazily terminated,
+        # and in other parts of the toolchain we also build up multiprocessing pools.
+        pool.terminate()
+        pool.join()
+      except Exception, e:
+        # On Windows we get occassional "Access is denied" errors when attempting to tear down the pool, ignore these.
+        logging.debug('Attempting to tear down multiprocessing pool failed with an exception: ' + str(e))
     else:
       # We can't parallize, but still break into chunks to avoid uglify/node memory issues
       if len(chunks) > 1 and DEBUG: print >> sys.stderr, 'splitting up js optimization into %d chunks' % (len(chunks))
@@ -461,34 +471,35 @@ EMSCRIPTEN_FUNCS();
     end_asm = '// EMSCRIPTEN_END_ASM\n'
     cl_sep = 'wakaUnknownBefore(); var asm=wakaUnknownAfter(global,env,buffer)\n'
 
-    cle = temp_files.get('.cl.js').name
-    c = open(cle, 'w')
-    pre_1, pre_2 = pre.split(start_asm)
-    post_1, post_2 = post.split(end_asm)
-    c.write(pre_1)
-    c.write(cl_sep)
-    c.write(post_2)
-    c.close()
-    cld = cle
-    if split_memory:
-      if DEBUG: print >> sys.stderr, 'running splitMemory on shell code'
-      cld = run_on_chunk(js_engine + [JS_OPTIMIZER, cld, 'splitMemoryShell'])
-      f = open(cld, 'a')
-      f.write(suffix_marker)
-      f.close()
-    if closure:
-      if DEBUG: print >> sys.stderr, 'running closure on shell code'
-      cld = shared.Building.closure_compiler(cld, pretty='minifyWhitespace' not in passes)
-      temp_files.note(cld)
-    elif cleanup:
-      if DEBUG: print >> sys.stderr, 'running cleanup on shell code'
-      next = cld + '.cl.js'
-      temp_files.note(next)
-      proc = subprocess.Popen(js_engine + [JS_OPTIMIZER, cld, 'noPrintMetadata', 'JSDCE'] + (['minifyWhitespace'] if 'minifyWhitespace' in passes else []), stdout=open(next, 'w'))
-      proc.communicate()
-      assert proc.returncode == 0
-      cld = next
-    coutput = open(cld).read()
+    with temp_files.get_file('.cl.js') as cle:
+      c = open(cle, 'w')
+      pre_1, pre_2 = pre.split(start_asm)
+      post_1, post_2 = post.split(end_asm)
+      c.write(pre_1)
+      c.write(cl_sep)
+      c.write(post_2)
+      c.close()
+      cld = cle
+      if split_memory:
+        if DEBUG: print >> sys.stderr, 'running splitMemory on shell code'
+        cld = run_on_chunk(js_engine + [JS_OPTIMIZER, cld, 'splitMemoryShell'])
+        f = open(cld, 'a')
+        f.write(suffix_marker)
+        f.close()
+      if closure:
+        if DEBUG: print >> sys.stderr, 'running closure on shell code'
+        cld = shared.Building.closure_compiler(cld, pretty='minifyWhitespace' not in passes)
+        temp_files.note(cld)
+      elif cleanup:
+        if DEBUG: print >> sys.stderr, 'running cleanup on shell code'
+        next = cld + '.cl.js'
+        temp_files.note(next)
+        proc = subprocess.Popen(js_engine + [JS_OPTIMIZER, cld, 'noPrintMetadata', 'JSDCE'] + (['minifyWhitespace'] if 'minifyWhitespace' in passes else []), stdout=open(next, 'w'))
+        proc.communicate()
+        assert proc.returncode == 0
+        cld = next
+      coutput = open(cld).read()
+
     coutput = coutput.replace('wakaUnknownBefore();', start_asm)
     after = 'wakaUnknownAfter'
     start = coutput.find(after)
@@ -552,4 +563,5 @@ if __name__ == '__main__':
     extra_info = None
   out = run(sys.argv[1], sys.argv[2:], extra_info=extra_info)
   shutil.copyfile(out, sys.argv[1] + '.jsopt.js')
+  sys.exit(0)
 

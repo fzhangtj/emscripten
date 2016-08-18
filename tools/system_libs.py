@@ -236,6 +236,33 @@ def calculate(temp_files, in_temp, stdout_, stderr_, forced=[]):
     shared.Building.link([dlmalloc_o, split_malloc_o], lib)
     return lib
 
+  def create_wasm_compiler_rt(libname):
+    srcdir = shared.path_from_root('system', 'lib', 'compiler-rt', 'lib', 'builtins')
+    filenames = ['addtf3.c', 'ashlti3.c', 'ashrti3.c', 'comparetf2.c', 'divtf3.c', 'divti3.c', 'udivmodti4.c',
+                 'extenddftf2.c', 'extendsftf2.c',
+                 'fixdfti.c', 'fixsfti.c', 'fixtfdi.c', 'fixtfsi.c', 'fixtfti.c',
+                 'fixunsdfti.c', 'fixunssfti.c', 'fixunstfdi.c', 'fixunstfsi.c', 'fixunstfti.c',
+                 'floatditf.c', 'floatsitf.c', 'floattidf.c', 'floattisf.c',
+                 'floatunditf.c', 'floatunsitf.c', 'floatuntidf.c', 'floatuntisf.c', 'lshrti3.c',
+                 'modti3.c', 'multf3.c', 'multi3.c', 'subtf3.c', 'udivti3.c', 'umodti3.c', 'ashrdi3.c',
+                 'ashldi3.c', 'fixdfdi.c', 'floatdidf.c', 'lshrdi3.c', 'moddi3.c',
+                 'trunctfdf2.c', 'trunctfsf2.c', 'umoddi3.c', 'fixunsdfdi.c', 'muldi3.c',
+                 'divdi3.c', 'divmoddi4.c', 'udivdi3.c', 'udivmoddi4.c']
+    files = (os.path.join(srcdir, f) for f in filenames)
+    o_s = []
+    commands = []
+    for src in files:
+      o = in_temp(os.path.basename(src) + '.o')
+      # Use clang directly instead of emcc. Since emcc's intermediate format (produced by -S) is LLVM IR, there's no way to
+      # get emcc to output wasm .s files, which is what we archive in compiler_rt.
+      commands.append([shared.CLANG_CC, '--target=wasm32', '-S', shared.path_from_root('system', 'lib', src), '-O2', '-o', o] + shared.EMSDK_OPTS)
+      o_s.append(o)
+    run_commands(commands)
+    lib = in_temp(libname)
+    run_commands([[shared.LLVM_AR, 'cr', '-format=gnu', lib] + o_s])
+    return lib
+
+
   # Setting this in the environment will avoid checking dependencies and make building big projects a little faster
   # 1 means include everything; otherwise it can be the name of a lib (libcxx, etc.)
   # You can provide 1 to include everything, or a comma-separated list with the ones you want
@@ -384,6 +411,11 @@ def calculate(temp_files, in_temp, stdout_, stderr_, forced=[]):
       ret.append(libfile)
       force = force.union(deps)
   ret.sort(key=lambda x: x.endswith('.a')) # make sure to put .a files at the end.
+
+  # Handle backend compiler_rt separately because it is not a bitcode system lib like the others.
+  # Here, just ensure that it's in the cache.
+  if shared.Settings.BINARYEN and shared.Settings.WASM_BACKEND:
+    crt_file = shared.Cache.get('wasm_compiler_rt.a', lambda: create_wasm_compiler_rt('wasm_compiler_rt.a'), extension='a')
 
   for actual in ret:
     if os.path.basename(actual) == 'libcxxabi.bc':

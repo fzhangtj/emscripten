@@ -23,6 +23,7 @@ var LibraryGL = {
     vaos: [],
     contexts: [],
     currentContext: null,
+    offscreenCanvases: {}, // DOM ID -> OffscreenCanvas mappings of <canvas> elements that have their rendering control transferred to offscreen.
 #if USE_WEBGL2
     queries: [],
     samplers: [],
@@ -528,6 +529,7 @@ var LibraryGL = {
       var handle = GL.getNewId(GL.contexts);
       var context = {
         handle: handle,
+        attributes: webGLContextAttributes,
         version: webGLContextAttributes.majorVersion,
         GLctx: ctx
       };
@@ -715,8 +717,21 @@ var LibraryGL = {
     switch(name_) {
       case 0x1F00 /* GL_VENDOR */:
       case 0x1F01 /* GL_RENDERER */:
-      case 0x1F02 /* GL_VERSION */:
+      case 0x9245 /* UNMASKED_VENDOR_WEBGL */:
+      case 0x9246 /* UNMASKED_RENDERER_WEBGL */:
         ret = allocate(intArrayFromString(GLctx.getParameter(name_)), 'i8', ALLOC_NORMAL);
+        break;
+      case 0x1F02 /* GL_VERSION */:
+        var glVersion = GLctx.getParameter(GLctx.VERSION);
+        // return GLES version string corresponding to the version of the WebGL context
+#if USE_WEBGL2
+        if (GLctx.canvas.GLctxObject.version >= 2) glVersion = 'OpenGL ES 3.0 (' + glVersion + ')';
+        else
+#endif
+        {
+          glVersion = 'OpenGL ES 2.0 (' + glVersion + ')';
+        }
+        ret = allocate(intArrayFromString(glVersion), 'i8', ALLOC_NORMAL);
         break;
       case 0x1F03 /* GL_EXTENSIONS */:
         var exts = GLctx.getSupportedExtensions();
@@ -729,11 +744,13 @@ var LibraryGL = {
         break;
       case 0x8B8C /* GL_SHADING_LANGUAGE_VERSION */:
         var glslVersion = GLctx.getParameter(GLctx.SHADING_LANGUAGE_VERSION);
-        // Map WebGL GL_SHADING_LANGUAGE_VERSION string format to GLES format.
-        if (glslVersion.indexOf('WebGL GLSL ES 1.0') != -1) glslVersion = 'OpenGL ES GLSL ES 1.00 (WebGL)';
-#if USE_WEBGL2
-        else if (glslVersion.indexOf('WebGL GLSL ES 3.00') != -1) glslVersion = 'OpenGL ES GLSL ES 3.00 (WebGL 2)';
-#endif
+        // extract the version number 'N.M' from the string 'WebGL GLSL ES N.M ...'
+        var ver_re = /^WebGL GLSL ES ([0-9]\.[0-9][0-9]?)(?:$| .*)/;
+        var ver_num = glslVersion.match(ver_re);
+        if (ver_num !== null) {
+          if (ver_num[1].length == 3) ver_num[1] = ver_num[1] + '0'; // ensure minor version has 2 digits
+          glslVersion = 'OpenGL ES GLSL ES ' + ver_num[1] + ' (' + glslVersion + ')';
+        }
         ret = allocate(intArrayFromString(glslVersion), 'i8', ALLOC_NORMAL);
         break;
       default:
@@ -798,6 +815,14 @@ var LibraryGL = {
         }
         var exts = GLctx.getSupportedExtensions();
         ret = 2*exts.length; // each extension is duplicated, first in unprefixed WebGL form, and then a second time with "GL_" prefix.
+        break;
+      case 0x821B: // GL_MAJOR_VERSION
+      case 0x821C: // GL_MINOR_VERSION
+        if (GLctx.canvas.GLctxObject.version < 2) {
+          GL.recordError(0x0500); // GL_INVALID_ENUM
+          return;
+        }
+        ret = name_ == 0x821B ? 3 : 0; // return version 3.0
         break;
 #endif
     }
@@ -2078,11 +2103,15 @@ var LibraryGL = {
 
   glFenceSync__sig: 'iii',
   glFenceSync: function(condition, flags) {
-    var id = GL.getNewId(GL.syncs);
     var sync = GLctx.fenceSync(condition, flags);
-    sync.name = id;
-    GL.syncs[id] = sync;
-    return id;
+    if (sync) {
+      var id = GL.getNewId(GL.syncs);
+      sync.name = id;
+      GL.syncs[id] = sync;
+      return id;
+    } else {
+      return 0; // Failed to create a sync object
+    }
   },
 
   glDeleteSync__sig: 'vi',

@@ -53,6 +53,7 @@ extern "C" {
 #define EMSCRIPTEN_EVENT_MOUSEOVER             35
 #define EMSCRIPTEN_EVENT_MOUSEOUT              36
 #define EMSCRIPTEN_EVENT_CANVASRESIZED         37
+#define EMSCRIPTEN_EVENT_POINTERLOCKERROR      38
 
 #define EMSCRIPTEN_RESULT int
 
@@ -292,6 +293,9 @@ typedef struct EmscriptenPointerlockChangeEvent {
 typedef EM_BOOL (*em_pointerlockchange_callback_func)(int eventType, const EmscriptenPointerlockChangeEvent *pointerlockChangeEvent, void *userData);
 extern EMSCRIPTEN_RESULT emscripten_set_pointerlockchange_callback(const char *target, void *userData, EM_BOOL useCapture, em_pointerlockchange_callback_func callback);
 
+typedef EM_BOOL (*em_pointerlockerror_callback_func)(int eventType, const void *reserved, void *userData);
+extern EMSCRIPTEN_RESULT emscripten_set_pointerlockerror_callback(const char *target, void *userData, EM_BOOL useCapture, em_pointerlockerror_callback_func callback);
+
 extern EMSCRIPTEN_RESULT emscripten_get_pointerlock_status(EmscriptenPointerlockChangeEvent *pointerlockStatus);
 
 extern EMSCRIPTEN_RESULT emscripten_request_pointerlock(const char *target, EM_BOOL deferUntilInEventHandler);
@@ -405,6 +409,7 @@ typedef struct EmscriptenWebGLContextAttributes {
   int minorVersion;
 
   EM_BOOL enableExtensionsByDefault;
+  EM_BOOL explicitSwapControl;
 } EmscriptenWebGLContextAttributes;
 
 extern void emscripten_webgl_init_context_attributes(EmscriptenWebGLContextAttributes *attributes);
@@ -424,6 +429,8 @@ extern EMSCRIPTEN_RESULT emscripten_set_webglcontextlost_callback(const char *ta
 extern EMSCRIPTEN_RESULT emscripten_set_webglcontextrestored_callback(const char *target, void *userData, EM_BOOL useCapture, em_webgl_context_callback callback);
 
 extern EM_BOOL emscripten_is_webgl_context_lost(const char *target);
+
+extern EMSCRIPTEN_RESULT emscripten_webgl_commit_frame();
 
 extern EMSCRIPTEN_RESULT emscripten_set_element_css_size(const char *target, double width, double height);
 extern EMSCRIPTEN_RESULT emscripten_get_element_css_size(const char *target, double *width, double *height);

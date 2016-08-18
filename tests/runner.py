@@ -120,11 +120,18 @@ class RunnerCore(unittest.TestCase):
 
   env = {}
 
+  EM_TESTRUNNER_DETECT_TEMPFILE_LEAKS = int(os.getenv('EM_TESTRUNNER_DETECT_TEMPFILE_LEAKS')) if os.getenv('EM_TESTRUNNER_DETECT_TEMPFILE_LEAKS') != None else 0
+
+  temp_files_before_run = []
+
   def skipme(self): # used by tests we ask on the commandline to be skipped, see right before call to unittest.main
     return self.skip('requested to be skipped')
 
   def is_emterpreter(self):
     return False
+
+  def is_wasm_backend(self):
+    return LLVM_TARGET == WASM_TARGET
 
   def uses_memory_init_file(self):
     if self.emcc_args is None:
@@ -136,6 +143,12 @@ class RunnerCore(unittest.TestCase):
 
   def setUp(self):
     Settings.reset()
+
+    if self.EM_TESTRUNNER_DETECT_TEMPFILE_LEAKS:
+      for root, dirnames, filenames in os.walk(TEMP_DIR):
+        for dirname in dirnames: self.temp_files_before_run.append(os.path.normpath(os.path.join(root, dirname)))
+        for filename in filenames: self.temp_files_before_run.append(os.path.normpath(os.path.join(root, filename)))
+
     self.banned_js_engines = []
     self.use_all_engines = use_all_engines
     if not self.save_dir:
@@ -162,6 +175,19 @@ class RunnerCore(unittest.TestCase):
       # rmtree() fails on Windows if the current working directory is inside the tree.
       os.chdir(os.path.join(self.get_dir(), '..'))
       try_delete(self.get_dir())
+
+      if self.EM_TESTRUNNER_DETECT_TEMPFILE_LEAKS and not os.environ.get('EMCC_DEBUG'):
+        temp_files_after_run = []
+        for root, dirnames, filenames in os.walk(TEMP_DIR):
+          for dirname in dirnames: temp_files_after_run.append(os.path.normpath(os.path.join(root, dirname)))
+          for filename in filenames: temp_files_after_run.append(os.path.normpath(os.path.join(root, filename)))
+
+        left_over_files = list(set(temp_files_after_run) - set(self.temp_files_before_run))
+        if len(left_over_files) > 0:
+          print >> sys.stderr, 'ERROR: After running test, there are ' + str(len(left_over_files)) + ' new temporary files/directories left behind:'
+          for f in left_over_files:
+            print >> sys.stderr, 'leaked file: ' + f
+          raise Exception('Test leaked ' + str(len(left_over_files)) + ' temporary files!')
 
       # Make sure we don't leave stuff around
       #if not self.has_prev_ll:
@@ -579,6 +605,8 @@ class RunnerCore(unittest.TestCase):
 
   ## Does a complete test - builds, runs, checks output, etc.
   def do_run(self, src, expected_output, args=[], output_nicerizer=None, output_processor=None, no_build=False, main_file=None, additional_files=[], js_engines=None, post_build=None, basename='src.cpp', libraries=[], includes=[], force_c=False, build_ll_hook=None, extra_emscripten_args=[], assert_returncode=None):
+    if Settings.ASYNCIFY == 1 and self.is_wasm_backend():
+      return self.skip("wasm backend doesn't support ASYNCIFY yet")
     if force_c or (main_file is not None and main_file[-2:]) == '.c':
       basename = 'src.c'
       Building.COMPILER = to_cc(Building.COMPILER)
@@ -1093,9 +1121,12 @@ if __name__ == '__main__':
     numFailures += len(names)
     resultMessages.append('Could not find %s tests' % (len(names),))
 
+  print 'Test suites:'
+  print [s[0] for s in suites]
   # Run the discovered tests
   testRunner = unittest.TextTestRunner(verbosity=2)
   for mod_name, suite in suites:
+    print 'Running %s: (%s tests)' % (mod_name, suite.countTestCases())
     res = testRunner.run(suite)
     msg = '%s: %s run, %s errors, %s failures, %s skipped' % (mod_name,
         res.testsRun, len(res.errors), len(res.failures), len(res.skipped)
@@ -1113,4 +1144,3 @@ if __name__ == '__main__':
   # Return the number of failures as the process exit code for automating success/failure reporting.
   exitcode = min(numFailures, 255)
   sys.exit(exitcode)
-
