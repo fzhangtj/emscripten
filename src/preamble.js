@@ -52,8 +52,13 @@ function SAFE_HEAP_STORE(dest, value, bytes, isFloat) {
 #endif
   if (dest <= 0) abort('segmentation fault storing ' + bytes + ' bytes to address ' + dest);
   if (dest % bytes !== 0) abort('alignment error storing to address ' + dest + ', which was expected to be aligned to a multiple of ' + bytes);
-  if (dest + bytes > Math.max(DYNAMICTOP, STATICTOP)) abort('segmentation fault, exceeded the top of the available heap when storing ' + bytes + ' bytes to address ' + dest + '. STATICTOP=' + STATICTOP + ', DYNAMICTOP=' + DYNAMICTOP);
-  assert(DYNAMICTOP <= TOTAL_MEMORY);
+  if (staticSealed) {
+    if (dest + bytes > HEAP32[DYNAMICTOP_PTR>>2]) abort('segmentation fault, exceeded the top of the available dynamic heap when storing ' + bytes + ' bytes to address ' + dest + '. STATICTOP=' + STATICTOP + ', DYNAMICTOP=' + HEAP32[DYNAMICTOP_PTR>>2]);
+    assert(DYNAMICTOP_PTR);
+    assert(HEAP32[DYNAMICTOP_PTR>>2] <= TOTAL_MEMORY);
+  } else {
+    if (dest + bytes > STATICTOP) abort('segmentation fault, exceeded the top of the available static heap when storing ' + bytes + ' bytes to address ' + dest + '. STATICTOP=' + STATICTOP);
+  }
   setValue(dest, value, getSafeHeapType(bytes, isFloat), 1);
 }
 function SAFE_HEAP_STORE_D(dest, value, bytes) {
@@ -63,8 +68,13 @@ function SAFE_HEAP_STORE_D(dest, value, bytes) {
 function SAFE_HEAP_LOAD(dest, bytes, unsigned, isFloat) {
   if (dest <= 0) abort('segmentation fault loading ' + bytes + ' bytes from address ' + dest);
   if (dest % bytes !== 0) abort('alignment error loading from address ' + dest + ', which was expected to be aligned to a multiple of ' + bytes);
-  if (dest + bytes > Math.max(DYNAMICTOP, STATICTOP)) abort('segmentation fault, exceeded the top of the available heap when loading ' + bytes + ' bytes from address ' + dest + '. STATICTOP=' + STATICTOP + ', DYNAMICTOP=' + DYNAMICTOP);
-  assert(DYNAMICTOP <= TOTAL_MEMORY);
+  if (staticSealed) {
+    if (dest + bytes > HEAP32[DYNAMICTOP_PTR>>2]) abort('segmentation fault, exceeded the top of the available dynamic heap when loading ' + bytes + ' bytes from address ' + dest + '. STATICTOP=' + STATICTOP + ', DYNAMICTOP=' + HEAP32[DYNAMICTOP_PTR>>2]);
+    assert(DYNAMICTOP_PTR);
+    assert(HEAP32[DYNAMICTOP_PTR>>2] <= TOTAL_MEMORY);
+  } else {
+    if (dest + bytes > STATICTOP) abort('segmentation fault, exceeded the top of the available static heap when loading ' + bytes + ' bytes from address ' + dest + '. STATICTOP=' + STATICTOP);
+  }
   var type = getSafeHeapType(bytes, isFloat);
   var ret = getValue(dest, type, 1);
   if (unsigned) ret = unSign(ret, parseInt(type.substr(1)), 1);
@@ -143,8 +153,9 @@ var cwrap, ccall;
       var ret = 0;
       if (str !== null && str !== undefined && str !== 0) { // null string
         // at most 4 bytes per UTF-8 code point, +1 for the trailing '\0'
-        ret = Runtime.stackAlloc((str.length << 2) + 1);
-        writeStringToMemory(str, ret);
+        var len = (str.length << 2) + 1;
+        ret = Runtime.stackAlloc(len);
+        stringToUTF8(str, ret, len);
       }
       return ret;
     }
@@ -450,7 +461,7 @@ function allocate(slab, types, allocator, ptr) {
 // Allocate memory during any stage of startup - static memory early on, dynamic memory later, malloc when ready
 function getMemory(size) {
   if (!staticSealed) return Runtime.staticAlloc(size);
-  if ((typeof _sbrk !== 'undefined' && !_sbrk.called) || !runtimeInitialized) return Runtime.dynamicAlloc(size);
+  if (!runtimeInitialized) return Runtime.dynamicAlloc(size);
   return _malloc(size);
 }
 {{{ maybeExport('getMemory') }}}
@@ -850,8 +861,10 @@ function demangle(func) {
   var hasLibcxxabi = !!Module['___cxa_demangle'];
   if (hasLibcxxabi) {
     try {
-      var buf = _malloc(func.length);
-      writeStringToMemory(func.substr(1), buf);
+      var s = func.substr(1);
+      var len = lengthBytesUTF8(s)+1;
+      var buf = _malloc(len);
+      stringToUTF8(s, buf, len);
       var status = _malloc(4);
       var ret = Module['___cxa_demangle'](buf, 0, 0, status);
       if (getValue(status, 'i32') === 0 && ret) {
@@ -930,9 +943,18 @@ function updateGlobalBufferViews() {
   Module['HEAPF64'] = HEAPF64 = new Float64Array(buffer);
 }
 
-var STATIC_BASE = 0, STATICTOP = 0, staticSealed = false; // static area
-var STACK_BASE = 0, STACKTOP = 0, STACK_MAX = 0; // stack area
-var DYNAMIC_BASE = 0, DYNAMICTOP = 0; // dynamic area handled by sbrk
+var STATIC_BASE, STATICTOP, staticSealed; // static area
+var STACK_BASE, STACKTOP, STACK_MAX; // stack area
+var DYNAMIC_BASE, DYNAMICTOP_PTR; // dynamic area handled by sbrk
+
+#if USE_PTHREADS
+if (!ENVIRONMENT_IS_PTHREAD) { // Pthreads have already initialized these variables in src/pthread-main.js, where they were passed to the thread worker at startup time
+#endif
+  STATIC_BASE = STATICTOP = STACK_BASE = STACKTOP = STACK_MAX = DYNAMIC_BASE = DYNAMICTOP_PTR = 0;
+  staticSealed = false;
+#if USE_PTHREADS
+}
+#endif
 
 #if USE_PTHREADS
 if (ENVIRONMENT_IS_PTHREAD) {
@@ -966,11 +988,13 @@ function abortStackOverflow(allocSize) {
 }
 #endif
 
-#if ALLOW_MEMORY_GROWTH == 0
+#if ABORTING_MALLOC
 function abortOnCannotGrowMemory() {
   abort('Cannot enlarge memory arrays. Either (1) compile with  -s TOTAL_MEMORY=X  with X higher than the current value ' + TOTAL_MEMORY + ', (2) compile with  -s ALLOW_MEMORY_GROWTH=1  which adjusts the size at runtime but prevents some optimizations, (3) set Module.TOTAL_MEMORY to a higher value before the program runs, or if you want malloc to return NULL (0) instead of this abort, compile with  -s ABORTING_MALLOC=0 ');
 }
-#else // ALLOW_MEMORY_GROWTH
+#endif
+
+#if ALLOW_MEMORY_GROWTH
 if (!Module['reallocBuffer']) Module['reallocBuffer'] = function(size) {
   var ret;
   try {
@@ -1004,7 +1028,7 @@ function enlargeMemory() {
 #else
   // TOTAL_MEMORY is the current size of the actual array, and DYNAMICTOP is the new top.
 #if ASSERTIONS
-  assert(DYNAMICTOP >= TOTAL_MEMORY);
+  assert(HEAP32[DYNAMICTOP_PTR>>2] > TOTAL_MEMORY); // This function should only ever be called after the ceiling of the dynamic heap has already been bumped to exceed the current total size of the asm.js heap.
   assert(TOTAL_MEMORY > 4); // So the loop below will not be infinite
 #endif
 
@@ -1017,14 +1041,14 @@ function enlargeMemory() {
 
   var LIMIT = Math.pow(2, 31); // 2GB is a practical maximum, as we use signed ints as pointers
                                // and JS engines seem unhappy to give us 2GB arrays currently
-  if (DYNAMICTOP >= LIMIT) return false;
+  if (HEAP32[DYNAMICTOP_PTR>>2] >= LIMIT) return false;
 
-  while (TOTAL_MEMORY <= DYNAMICTOP) { // Simple heuristic.
+  while (TOTAL_MEMORY < HEAP32[DYNAMICTOP_PTR>>2]) { // Keep incrementing the heap size as long as it's less than what is requested.
     if (TOTAL_MEMORY < LIMIT/2) {
-      TOTAL_MEMORY = alignMemoryPage(2*TOTAL_MEMORY); // double until 1GB
+      TOTAL_MEMORY = alignMemoryPage(2*TOTAL_MEMORY); // // Simple heuristic: double until 1GB...
     } else {
       var last = TOTAL_MEMORY;
-      TOTAL_MEMORY = alignMemoryPage((3*TOTAL_MEMORY + LIMIT)/4); // add smaller increments towards 2GB, which we cannot reach
+      TOTAL_MEMORY = alignMemoryPage((3*TOTAL_MEMORY + LIMIT)/4); // ..., but after that, add smaller increments towards 2GB, which we cannot reach
       if (TOTAL_MEMORY <= last) return false;
     }
   }
@@ -1077,12 +1101,14 @@ try {
 var TOTAL_STACK = Module['TOTAL_STACK'] || {{{ TOTAL_STACK }}};
 var TOTAL_MEMORY = Module['TOTAL_MEMORY'] || {{{ TOTAL_MEMORY }}};
 
-var totalMemory = 64*1024;
+var WASM_PAGE_SIZE = 64 * 1024;
+
+var totalMemory = WASM_PAGE_SIZE;
 while (totalMemory < TOTAL_MEMORY || totalMemory < 2*TOTAL_STACK) {
   if (totalMemory < 16*1024*1024) {
     totalMemory *= 2;
   } else {
-    totalMemory += 16*1024*1024
+    totalMemory += 16*1024*1024;
   }
 }
 #if ALLOW_MEMORY_GROWTH
@@ -1191,7 +1217,26 @@ if (Module['buffer']) {
   assert(buffer.byteLength === TOTAL_MEMORY, 'provided buffer should be ' + TOTAL_MEMORY + ' bytes, but it is ' + buffer.byteLength);
 #endif
 } else {
-  buffer = new ArrayBuffer(TOTAL_MEMORY);
+  // Use a WebAssembly memory where available
+#if BINARYEN
+  if (typeof WebAssembly === 'object' && typeof WebAssembly.Memory === 'function') {
+#if ASSERTIONS
+    assert(TOTAL_MEMORY % WASM_PAGE_SIZE === 0);
+#endif
+#if ALLOW_MEMORY_GROWTH
+    Module['wasmMemory'] = new WebAssembly.Memory({ initial: TOTAL_MEMORY / WASM_PAGE_SIZE });
+#else
+    Module['wasmMemory'] = new WebAssembly.Memory({ initial: TOTAL_MEMORY / WASM_PAGE_SIZE, maximum: TOTAL_MEMORY / WASM_PAGE_SIZE });
+#endif
+    buffer = Module['wasmMemory'].buffer;
+  } else
+#endif
+  {
+    buffer = new ArrayBuffer(TOTAL_MEMORY);
+  }
+#if ASSERTIONS
+  assert(buffer.byteLength === TOTAL_MEMORY);
+#endif
 }
 updateGlobalBufferViews();
 #else // SPLIT_MEMORY
@@ -1467,6 +1512,10 @@ function setF64(ptr, value) {
 
 #endif // USE_PTHREADS
 
+function getTotalMemory() {
+  return TOTAL_MEMORY;
+}
+
 // Endianness check (note: assumes compiler arch was little-endian)
 #if SAFE_SPLIT_MEMORY == 0
 #if USE_PTHREADS
@@ -1643,21 +1692,28 @@ function intArrayToString(array) {
 }
 {{{ maybeExport('intArrayToString') }}}
 
+// Deprecated: This function should not be called because it is unsafe and does not provide
+// a maximum length limit of how many bytes it is allowed to write. Prefer calling the
+// function stringToUTF8Array() instead, which takes in a maximum length that can be used
+// to be secure from out of bounds writes.
 function writeStringToMemory(string, buffer, dontAddNull) {
-  var array = intArrayFromString(string, dontAddNull);
-  var i = 0;
-  while (i < array.length) {
-    var chr = array[i];
-    {{{ makeSetValue('buffer', 'i', 'chr', 'i8') }}};
-    i = i + 1;
+  Runtime.warnOnce('writeStringToMemory is deprecated and should not be called! Use stringToUTF8() instead!');
+
+  var lastChar, end;
+  if (dontAddNull) {
+    // stringToUTF8Array always appends null. If we don't want to do that, remember the
+    // character that existed at the location where the null will be placed, and restore
+    // that after the write (below).
+    end = buffer + lengthBytesUTF8(string);
+    lastChar = HEAP8[end];
   }
+  stringToUTF8(string, buffer, Infinity);
+  if (dontAddNull) HEAP8[end] = lastChar; // Restore the value under the null character.
 }
 {{{ maybeExport('writeStringToMemory') }}}
 
 function writeArrayToMemory(array, buffer) {
-  for (var i = 0; i < array.length; i++) {
-    {{{ makeSetValue('buffer++', 0, 'array[i]', 'i8') }}};
-  }
+  HEAP8.set(array, buffer);    
 }
 {{{ maybeExport('writeArrayToMemory') }}}
 
@@ -1883,7 +1939,9 @@ addOnPreRun(function() {
       Runtime.loadDynamicLibrary(lib);
     });
   }
-  asm['runPostSets']();
+  if (asm['runPostSets']) {
+    asm['runPostSets']();
+  }
 });
 
 #if ASSERTIONS

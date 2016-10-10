@@ -2,7 +2,7 @@ import os, json, logging, zipfile, glob
 import shared
 from subprocess import Popen, CalledProcessError
 import subprocess, multiprocessing, re
-import multiprocessing
+from sys import maxint
 from tools.shared import check_call
 
 stdout = None
@@ -24,7 +24,8 @@ def run_commands(commands):
       call_process(command)
   else:
     pool = multiprocessing.Pool(processes=cores)
-    pool.map(call_process, commands, chunksize=1)
+    # https://stackoverflow.com/questions/1408356/keyboard-interrupts-with-pythons-multiprocessing-pool, https://bugs.python.org/issue8296
+    pool.map_async(call_process, commands, chunksize=1).get(maxint)
 
 def calculate(temp_files, in_temp, stdout_, stderr_, forced=[]):
   global stdout, stderr
@@ -40,7 +41,7 @@ def calculate(temp_files, in_temp, stdout_, stderr_, forced=[]):
       symbols = filter(lambda symbol: symbol not in exclude, symbols)
     return set(symbols)
 
-  default_opts = []
+  default_opts = ['-Werror']
 
   # XXX We also need to add libc symbols that use malloc, for example strdup. It's very rare to use just them and not
   #     a normal malloc symbol (like free, after calling strdup), so we haven't hit this yet, but it is possible.
@@ -61,6 +62,8 @@ def calculate(temp_files, in_temp, stdout_, stderr_, forced=[]):
     # Hide several musl warnings that produce a lot of spam to unit test build server logs.
     # TODO: When updating musl the next time, feel free to recheck which of their warnings might have been fixed, and which ones of these could be cleaned up.
     c_opts = ['-Wno-return-type', '-Wno-parentheses', '-Wno-ignored-attributes', '-Wno-shift-count-overflow', '-Wno-shift-negative-value', '-Wno-dangling-else', '-Wno-unknown-pragmas', '-Wno-shift-op-parentheses', '-Wno-string-plus-int', '-Wno-logical-op-parentheses', '-Wno-bitwise-op-parentheses', '-Wno-visibility', '-Wno-pointer-sign']
+    if shared.Settings.WASM_BACKEND:
+      c_opts.append('-Wno-error=absolute-value')
     for src in files:
       o = in_temp(os.path.basename(src) + '.o')
       commands.append([shared.PYTHON, shared.EMCC, shared.path_from_root('system', 'lib', src), '-o', o] + musl_internal_includes + default_opts + c_opts + lib_opts)
@@ -324,12 +327,6 @@ def calculate(temp_files, in_temp, stdout_, stderr_, forced=[]):
       for dep in value:
         shared.Settings.EXPORTED_FUNCTIONS.append('_' + dep)
 
-  all_needed = set()
-  for symbols in symbolses:
-    all_needed.update(symbols.undefs)
-  for symbols in symbolses:
-    all_needed.difference_update(symbols.defs)
-
   system_libs = [('libcxx',      'a',  create_libcxx,      libcxx_symbols,      ['libcxxabi'], True),
                  ('libcxxabi',   'bc', create_libcxxabi,   libcxxabi_symbols,   ['libc'],      False),
                  ('gl',          'bc', create_gl,          gl_symbols,          ['libc'],      False),
@@ -571,7 +568,7 @@ class Ports:
   @staticmethod
   def build_project(name, subdir, configure, generated_libs, post_create=None):
     def create():
-      logging.warning('building port: ' + name + '...')
+      logging.info('building port: ' + name + '...')
       port_build_dir = Ports.get_build_dir()
       shared.safe_ensure_dirs(port_build_dir)
       libs = shared.Building.build_library(name, port_build_dir, None, generated_libs, source_dir=os.path.join(Ports.get_dir(), name, subdir), copy_project=True,

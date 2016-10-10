@@ -272,6 +272,44 @@ If manually bisecting:
     Popen([PYTHON, EMCC, os.path.join(self.get_dir(), 'main.cpp'), '--pre-js', 'pre.js', '-o', 'page.html', '--use-preload-plugins']).communicate()
     self.run_browser('page.html', 'You should see |load me right before|.', '/report_result?1')
 
+  # Tests that if the output files have single or double quotes in them, that it will be handled by correctly escaping the names.
+  def test_output_file_escaping(self):
+    d = 'dir with \' and \"'
+    abs_d = os.path.join(self.get_dir(), d)
+    try:
+      os.mkdir(abs_d)
+    except:
+      pass
+    txt = 'file with \' and \".txt'
+    abs_txt = os.path.join(abs_d, txt)
+    open(abs_txt, 'w').write('load me right before')
+
+    cpp = os.path.join(d, 'file with \' and \".cpp')
+    open(cpp, 'w').write(self.with_report_result(r'''
+      #include <stdio.h>
+      #include <string.h>
+      #include <emscripten.h>
+      int main() {
+        FILE *f = fopen("%s", "r");
+        char buf[100];
+        fread(buf, 1, 20, f);
+        buf[20] = 0;
+        fclose(f);
+        printf("|%%s|\n", buf);
+        int result = !strcmp("|load me right before|", buf);
+        REPORT_RESULT();
+        return 0;
+      }
+    ''' % (txt.replace('\'', '\\\'').replace('\"', '\\"'))))
+
+    data_file = os.path.join(abs_d, 'file with \' and \".data')
+    data_js_file = os.path.join(abs_d, 'file with \' and \".js')
+    Popen([PYTHON, FILE_PACKAGER, data_file, '--use-preload-cache', '--indexedDB-name=testdb', '--preload', abs_txt + '@' + txt, '--js-output=' + data_js_file]).communicate()
+    page_file = os.path.join(d, 'file with \' and \".html')
+    abs_page_file = os.path.join(self.get_dir(), page_file)
+    Popen([PYTHON, EMCC, cpp, '--pre-js', data_js_file, '-o', abs_page_file]).communicate()
+    self.run_browser(page_file, '|load me right before|.', '/report_result?0')
+
   def test_preload_caching(self):
     open(os.path.join(self.get_dir(), 'somefile.txt'), 'w').write('''load me right before running the code please''')
     def make_main(path):
@@ -1536,6 +1574,10 @@ keydown(100);keyup(100); // trigger the end
   def test_emscripten_main_loop_and_blocker(self):
     self.btest('emscripten_main_loop_and_blocker.cpp', '0')
 
+  def test_emscripten_main_loop_setimmediate(self):
+    for args in [[], ['--proxy-to-worker']]:
+      self.btest('emscripten_main_loop_setimmediate.cpp', '1', args=args)
+
   def test_sdl_quit(self):
     self.btest('sdl_quit.c', '1')
 
@@ -1986,6 +2028,9 @@ void *getBindBuffer() {
       open(os.path.join(self.get_dir(), 'post.js'), 'w').write(post_prep + 'expected_ok = true; Module.postRun.push(function() { ' + post_test + ' });' + post_hook);
       self.btest(filename, expected='606', args=['--post-js', 'post.js', '--memory-init-file', '0', '-s', 'NO_EXIT_RUNTIME=1'] + extra_args)
 
+  def test_cwrap_early(self):
+    self.btest(os.path.join('browser', 'cwrap_early.cpp'), args=['-O2', '-s', 'ASSERTIONS=1', '--pre-js', path_from_root('tests', 'browser', 'cwrap_early.js')], expected='0')
+
   def test_worker_api(self):
     Popen([PYTHON, EMCC, path_from_root('tests', 'worker_api_worker.cpp'), '-o', 'worker.js', '-s', 'BUILD_AS_WORKER=1', '-s', 'EXPORTED_FUNCTIONS=["_one"]']).communicate()
     self.btest('worker_api_main.cpp', expected='566')
@@ -2108,15 +2153,31 @@ Module["preRun"].push(function () {
       print opts
       self.btest(path_from_root('tests', 'webgl_create_context.cpp'), args=opts, expected='0', timeout=20)
 
+  # Verify bug https://github.com/kripken/emscripten/issues/4556: creating a WebGL context to Module.canvas without an ID explicitly assigned to it.
+  def test_html5_webgl_create_context2(self):
+    self.btest(path_from_root('tests', 'webgl_create_context2.cpp'), args=['--shell-file', path_from_root('tests', 'webgl_create_context2_shell.html')], expected='0', timeout=20)
+
   def test_html5_webgl_destroy_context(self):
     for opts in [[], ['-O2', '-g1'], ['-s', 'FULL_ES2=1']]:
       print opts
       self.btest(path_from_root('tests', 'webgl_destroy_context.cpp'), args=opts + ['--shell-file', path_from_root('tests/webgl_destroy_context_shell.html'), '-s', 'NO_EXIT_RUNTIME=1'], expected='0', timeout=20)
 
+  def test_webgl_context_params(self):
+    self.btest(path_from_root('tests', 'webgl_color_buffer_readpixels.cpp'), expected='0', timeout=20)
+
   def test_webgl2(self):
     for opts in [[], ['-O2', '-g1', '--closure', '1'], ['-s', 'FULL_ES2=1']]:
       print opts
       self.btest(path_from_root('tests', 'webgl2.cpp'), args=['-s', 'USE_WEBGL2=1'] + opts, expected='0')
+
+  def test_webgl2_objects(self):
+    self.btest(path_from_root('tests', 'webgl2_objects.cpp'), args=['-s', 'USE_WEBGL2=1'], expected='0')
+
+  def test_webgl2_ubos(self):
+    self.btest(path_from_root('tests', 'webgl2_ubos.cpp'), args=['-s', 'USE_WEBGL2=1'], expected='0')
+
+  def test_webgl_with_closure(self):
+    self.btest(path_from_root('tests', 'webgl_with_closure.cpp'), args=['-O2', '-s', 'USE_WEBGL2=1', '--closure', '1'], expected='0')
 
   def test_sdl_touch(self):
     for opts in [[], ['-O2', '-g1', '--closure', '1']]:
@@ -2888,7 +2949,7 @@ window.close = function() {
 
   # Test that main thread can wait for a pthread to finish via pthread_join().
   def test_pthread_join(self):
-    self.btest(path_from_root('tests', 'pthread', 'test_pthread_join.cpp'), expected='6765', args=['-O3', '-s', 'USE_PTHREADS=2', '--separate-asm', '-s', 'PTHREAD_POOL_SIZE=8'], timeout=30)
+    self.btest(path_from_root('tests', 'pthread', 'test_pthread_join.cpp'), expected='6765', args=['-O3', '-s', 'USE_PTHREADS=2', '--separate-asm', '-s', 'PTHREAD_POOL_SIZE=8', '-s', 'ERROR_ON_UNDEFINED_SYMBOLS=1'], timeout=30)
 
   # Test pthread_cancel() operation
   def test_pthread_cancel(self):
@@ -3017,6 +3078,28 @@ window.close = function() {
   # Test that if the main thread is performing a futex wait while a pthread needs it to do a proxied operation (before that pthread would wake up the main thread), that it's not a deadlock.
   def test_pthread_proxying_in_futex_wait(self):
     self.btest(path_from_root('tests', 'pthread', 'test_pthread_proxying_in_futex_wait.cpp'), expected='0', args=['-O3', '-s', 'USE_PTHREADS=2', '-s', 'PTHREAD_POOL_SIZE=1', '--separate-asm'], timeout=30)
+
+  # Test that sbrk() operates properly in multithreaded conditions
+  def test_pthread_sbrk(self):
+    for aborting_malloc in [0, 1]:
+      print 'aborting malloc=' + str(aborting_malloc)
+      # With aborting malloc = 1, test allocating memory in threads
+      # With aborting malloc = 0, allocate so much memory in threads that some of the allocations fail.
+      self.btest(path_from_root('tests', 'pthread', 'test_pthread_sbrk.cpp'), expected='0', args=['-O3', '-s', 'USE_PTHREADS=1', '-s', 'PTHREAD_POOL_SIZE=8', '--separate-asm', '-s', 'ABORTING_MALLOC=' + str(aborting_malloc), '-DABORTING_MALLOC=' + str(aborting_malloc), '-s', 'TOTAL_MEMORY=134217728'], timeout=30)
+
+  # Test that -s ABORTING_MALLOC=0 works in both pthreads and non-pthreads builds. (sbrk fails gracefully)
+  def test_pthread_gauge_available_memory(self):
+    for opts in [[], ['-O2']]:
+      for args in [[], ['-s', 'USE_PTHREADS=1']]:
+        self.btest(path_from_root('tests', 'gauge_available_memory.cpp'), expected='1', args=['-s', 'ABORTING_MALLOC=0'] + args + opts, timeout=30)
+
+  # Test that the proxying operations of user code from pthreads to main thread work
+  def test_pthread_run_on_main_thread(self):
+    self.btest(path_from_root('tests', 'pthread', 'test_pthread_run_on_main_thread.cpp'), expected='0', args=['-O3', '-s', 'USE_PTHREADS=2', '-s', 'PTHREAD_POOL_SIZE=1', '--separate-asm'], timeout=30)
+
+  # Test how a lot of back-to-back called proxying operations behave.
+  def test_pthread_run_on_main_thread_flood(self):
+    self.btest(path_from_root('tests', 'pthread', 'test_pthread_run_on_main_thread_flood.cpp'), expected='0', args=['-O3', '-s', 'USE_PTHREADS=2', '-s', 'PTHREAD_POOL_SIZE=1', '--separate-asm'], timeout=30)
 
   # test atomicrmw i64
   def test_atomicrmw_i64(self):

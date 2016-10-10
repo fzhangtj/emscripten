@@ -477,74 +477,102 @@ f.close()
       except KeyError:
         postbuild = None
 
-      cmake_cases = ['target_js', 'target_html', 'target_library', 'target_library']
-      cmake_outputs = ['test_cmake.js', 'hello_world_gles.html', 'libtest_cmake.a', 'libtest_cmake.so']
-      cmake_arguments = ['', '', '-DBUILD_SHARED_LIBS=OFF', '-DBUILD_SHARED_LIBS=ON']
-      for i in range(0, len(cmake_cases)):
-        for configuration in ['Debug', 'Release']:
-          # CMake can be invoked in two ways, using 'emconfigure cmake', or by directly running 'cmake'.
-          # Test both methods.
-          for invoke_method in ['cmake', 'emconfigure']:
-            for cpp_lib_type in ['STATIC', 'SHARED']:
-              # Create a temp workspace folder
-              cmakelistsdir = path_from_root('tests', 'cmake', cmake_cases[i])
-              tempdirname = tempfile.mkdtemp(prefix='emscripten_test_' + self.__class__.__name__ + '_', dir=TEMP_DIR)
-              try:
-                os.chdir(tempdirname)
+      # ('directory to the test', 'output filename', ['extra args to pass to CMake'])
+      # Testing all combinations would be too much work and the test would take 10 minutes+ to finish (CMake feature detection is slow),
+      # so combine multiple features into one to try to cover as much as possible while still keeping this test in sensible time limit.
+      cases = [
+        ('target_js',      'test_cmake.js',         ['-DCMAKE_BUILD_TYPE=Debug']),
+        ('target_html',    'hello_world_gles.html', ['-DCMAKE_BUILD_TYPE=Release',        '-DBUILD_SHARED_LIBS=OFF']),
+        ('target_library', 'libtest_cmake.a',       ['-DCMAKE_BUILD_TYPE=MinSizeRel',     '-DBUILD_SHARED_LIBS=OFF']),
+        ('target_library', 'libtest_cmake.a',       ['-DCMAKE_BUILD_TYPE=RelWithDebInfo', '-DCPP_LIBRARY_TYPE=STATIC']),
+        ('target_library', 'libtest_cmake.so',      ['-DCMAKE_BUILD_TYPE=Release',        '-DBUILD_SHARED_LIBS=ON']),
+        ('target_library', 'libtest_cmake.so',      ['-DCMAKE_BUILD_TYPE=Release',        '-DBUILD_SHARED_LIBS=ON', '-DCPP_LIBRARY_TYPE=SHARED']),
+        ('stdproperty',    'helloworld.js',         [])
+      ]
+      for test_dir, output_file, cmake_args in cases:
+        cmakelistsdir = path_from_root('tests', 'cmake', test_dir)
+        # Create a temp workspace folder
+        tempdirname = tempfile.mkdtemp(prefix='emscripten_test_' + self.__class__.__name__ + '_', dir=TEMP_DIR)
+        try:
+          os.chdir(tempdirname)
 
-                # Run Cmake
-                if invoke_method == 'cmake':
-                  # Test invoking cmake directly.
-                  cmd = ['cmake', '-DCMAKE_TOOLCHAIN_FILE='+path_from_root('cmake', 'Modules', 'Platform', 'Emscripten.cmake'),
-                                  '-DCPP_LIBRARY_TYPE='+cpp_lib_type,
-                                  '-DCMAKE_CROSSCOMPILING_EMULATOR="' + Building.which(NODE_JS[0] if type(NODE_JS) is list else NODE_JS) + '"',
-                                  '-DCMAKE_BUILD_TYPE=' + configuration, cmake_arguments[i], '-G', generator, cmakelistsdir]
-                  env = tools.shared.Building.remove_sh_exe_from_path(os.environ)
-                else:
-                  # Test invoking via 'emconfigure cmake'
-                  cmd = [emconfigure, 'cmake', '-DCMAKE_BUILD_TYPE=' + configuration, cmake_arguments[i], '-G', generator, cmakelistsdir]
-                  env = os.environ.copy()
+          # Run Cmake
+          cmd = [emconfigure, 'cmake'] + cmake_args + ['-G', generator, cmakelistsdir]
 
-                print str(cmd)
-                ret = Popen(cmd, stdout=None if EM_BUILD_VERBOSE_LEVEL >= 2 else PIPE, stderr=None if EM_BUILD_VERBOSE_LEVEL >= 1 else PIPE, env=env).communicate()
-                if len(ret) > 1 and ret[1] != None and len(ret[1].strip()) > 0:
-                  logging.error(ret[1]) # If there were any errors, print them directly to console for diagnostics.
-                if len(ret) > 1 and ret[1] != None and 'error' in ret[1].lower():
-                  logging.error('Failed command: ' + ' '.join(cmd))
-                  logging.error('Result:\n' + ret[1])
-                  raise Exception('cmake call failed!')
+          print str(cmd)
+          ret = Popen(cmd, stdout=None if EM_BUILD_VERBOSE_LEVEL >= 2 else PIPE, stderr=None if EM_BUILD_VERBOSE_LEVEL >= 1 else PIPE).communicate()
+          if len(ret) > 1 and ret[1] != None and len(ret[1].strip()) > 0:
+            logging.error(ret[1]) # If there were any errors, print them directly to console for diagnostics.
+          if len(ret) > 1 and ret[1] != None and 'error' in ret[1].lower():
+            logging.error('Failed command: ' + ' '.join(cmd))
+            logging.error('Result:\n' + ret[1])
+            raise Exception('cmake call failed!')
 
-                if prebuild:
-                  prebuild(configuration, tempdirname)
+          if prebuild:
+            prebuild(configuration, tempdirname)
 
-                # Build
-                cmd = make
-                if EM_BUILD_VERBOSE_LEVEL >= 3 and 'Ninja' not in generator:
-                  cmd += ['VERBOSE=1']
-                ret = Popen(cmd, stdout=None if EM_BUILD_VERBOSE_LEVEL >= 2 else PIPE).communicate()
-                if len(ret) > 1 and ret[1] != None and len(ret[1].strip()) > 0:
-                  logging.error(ret[1]) # If there were any errors, print them directly to console for diagnostics.
-                if len(ret) > 0 and ret[0] != None and 'error' in ret[0].lower() and not '0 error(s)' in ret[0].lower():
-                  logging.error('Failed command: ' + ' '.join(cmd))
-                  logging.error('Result:\n' + ret[0])
-                  raise Exception('make failed!')
-                assert os.path.exists(tempdirname + '/' + cmake_outputs[i]), 'Building a cmake-generated Makefile failed to produce an output file %s!' % tempdirname + '/' + cmake_outputs[i]
+          # Build
+          cmd = make
+          if EM_BUILD_VERBOSE_LEVEL >= 3 and 'Ninja' not in generator:
+            cmd += ['VERBOSE=1']
+          ret = Popen(cmd, stdout=None if EM_BUILD_VERBOSE_LEVEL >= 2 else PIPE).communicate()
+          if len(ret) > 1 and ret[1] != None and len(ret[1].strip()) > 0:
+            logging.error(ret[1]) # If there were any errors, print them directly to console for diagnostics.
+          if len(ret) > 0 and ret[0] != None and 'error' in ret[0].lower() and not '0 error(s)' in ret[0].lower():
+            logging.error('Failed command: ' + ' '.join(cmd))
+            logging.error('Result:\n' + ret[0])
+            raise Exception('make failed!')
+          assert os.path.exists(tempdirname + '/' + output_file), 'Building a cmake-generated Makefile failed to produce an output file %s!' % tempdirname + '/' + output_file
 
-                if postbuild:
-                  postbuild(configuration, tempdirname)
+          if postbuild:
+            postbuild(configuration, tempdirname)
 
-                # Run through node, if CMake produced a .js file.
-                if cmake_outputs[i].endswith('.js'):
-                  ret = Popen(NODE_JS + [tempdirname + '/' + cmake_outputs[i]], stdout=PIPE).communicate()[0]
-                  self.assertTextDataIdentical(open(cmakelistsdir + '/out.txt', 'r').read().strip(), ret.strip())
-              finally:
-                os.chdir(path_from_root('tests')) # Move away from the directory we are about to remove.
-                #there is a race condition under windows here causing an exception in shutil.rmtree because the directory is not empty yet
-                try:
-                  shutil.rmtree(tempdirname)
-                except:
-                  time.sleep(0.1)
-                  shutil.rmtree(tempdirname)
+          # Run through node, if CMake produced a .js file.
+          if output_file.endswith('.js'):
+            ret = Popen(NODE_JS + [tempdirname + '/' + output_file], stdout=PIPE).communicate()[0]
+            self.assertTextDataIdentical(open(cmakelistsdir + '/out.txt', 'r').read().strip(), ret.strip())
+        finally:
+          os.chdir(path_from_root('tests')) # Move away from the directory we are about to remove.
+          #there is a race condition under windows here causing an exception in shutil.rmtree because the directory is not empty yet
+          try:
+            shutil.rmtree(tempdirname)
+          except:
+            time.sleep(0.1)
+            shutil.rmtree(tempdirname)
+
+  # Test that the various CMAKE_xxx_COMPILE_FEATURES that are advertised for the Emscripten toolchain match with the actual language features that Clang supports.
+  # If we update LLVM version and this test fails, copy over the new advertised features from Clang and place them to cmake/Modules/Platform/Emscripten.cmake.
+  def test_cmake_compile_features(self):
+    if WINDOWS: return self.skip('Skipped on Windows because CMake does not configure native Clang builds well on Windows.')
+
+    tempdirname_native = tempfile.mkdtemp(prefix='emscripten_test_' + self.__class__.__name__ + '_', dir=TEMP_DIR)
+    tempdirname_emscripten = tempfile.mkdtemp(prefix='emscripten_test_' + self.__class__.__name__ + '_', dir=TEMP_DIR)
+    try:
+      os.chdir(tempdirname_native)
+      native_features = Popen(['cmake', '-DCMAKE_C_COMPILER=' + CLANG_CC, '-DCMAKE_CXX_COMPILER=' + CLANG_CPP, path_from_root('tests', 'cmake', 'stdproperty')], stdout=PIPE).communicate()[0]
+    finally:
+      os.chdir(tempdirname_emscripten)
+      try:
+        shutil.rmtree(tempdirname_native)
+      except:
+        pass
+
+    if os.name == 'nt': emconfigure = path_from_root('emcmake.bat')
+    else: emconfigure = path_from_root('emcmake')
+
+    try:
+      os.chdir(tempdirname_emscripten)
+      emscripten_features = Popen([emconfigure, 'cmake', path_from_root('tests', 'cmake', 'stdproperty')], stdout=PIPE).communicate()[0]
+    finally:
+      os.chdir(path_from_root('tests'))
+      try:
+        shutil.rmtree(tempdirname_emscripten)
+      except:
+        pass
+
+    native_features = '\n'.join(filter(lambda x: '***' in x, native_features.split('\n')))
+    emscripten_features = '\n'.join(filter(lambda x: '***' in x, emscripten_features.split('\n')))
+    self.assertTextDataIdentical(native_features, emscripten_features)
 
   def test_failure_error_code(self):
     for compiler in [EMCC, EMXX]:
@@ -754,6 +782,9 @@ This pointer might make sense in another type signature:''', '''Invalid function
     assert not os.path.exists('a.out') and not os.path.exists('a.exe'), 'Must not leave unneeded linker stubs'
 
   def test_outline(self):
+    if WINDOWS and not Building.which('mingw32-make'):
+      return self.skip('Skipping other.test_outline: This test requires "mingw32-make" tool in PATH on Windows to drive a Makefile build of zlib')
+
     def test(name, src, libs, expected, expected_ranges, args=[], suffix='cpp'):
       print name
 
@@ -5135,7 +5166,7 @@ int main() {
   def test_failing_alloc(self):
     for pre_fail, post_fail, opts in [
       ('', '', []),
-      ('EM_ASM( Module.temp = DYNAMICTOP );', 'EM_ASM( assert(Module.temp === DYNAMICTOP, "must not adjust DYNAMICTOP when an alloc fails!") );', []),
+      ('EM_ASM( Module.temp = HEAP32[DYNAMICTOP_PTR>>2] );', 'EM_ASM( assert(Module.temp === HEAP32[DYNAMICTOP_PTR>>2], "must not adjust DYNAMICTOP when an alloc fails!") );', []),
       ('', '', ['-s', 'SPLIT_MEMORY=' + str(16*1024*1024)]),
     ]:
       for growth in [0, 1]:
@@ -6518,12 +6549,95 @@ int main() {
     try_delete('test.bc')
 
   def test_output_eol(self):
-    for params in [[], ['--separate-asm']]:
-      for eol in ['windows', 'linux']:
-        Popen([PYTHON, EMCC, path_from_root('tests', 'hello_world.c'), '-o', 'a.html', '--output_eol', eol] + params).communicate()
-        for f in ['a.html', 'a.js', 'a.asm.js']:
-          if os.path.isfile(f):
-            print str(params) + ' ' + eol + ' ' + f
+    for params in [[], ['--separate-asm'], ['--proxy-to-worker'], ['--proxy-to-worker', '--separate-asm']]:
+      for output_suffix in ['html', 'js']:
+        for eol in ['windows', 'linux']:
+          files = ['a.js']
+          if '--separate-asm' in params: files += ['a.asm.js']
+          if output_suffix == 'html': files += ['a.html']
+          cmd = [PYTHON, EMCC, path_from_root('tests', 'hello_world.c'), '-o', 'a.' + output_suffix, '--output_eol', eol] + params
+          Popen(cmd).communicate()
+          for f in files:
+            print str(cmd) + ' ' + str(params) + ' ' + eol + ' ' + f
+            assert os.path.isfile(f)
             ret = tools.line_endings.check_line_endings(f, expect_only_specific_line_endings='\n' if eol == 'linux' else '\r\n')
             assert ret == 0
+
+          for f in files:
+            try_delete(f)
+
+  def test_binaryen_and_js_opts(self):
+    if os.environ.get('EMCC_DEBUG'): return self.skip('cannot run in debug mode')
+ 
+    with clean_write_access_to_canonical_temp_dir():
+      try:
+        os.environ['EMCC_DEBUG'] = '1'
+        for args, expect_js_opts, expect_only_wasm in [
+            ([], False, True),
+            (['-O0'], False, True),
+            (['-O1'], False, True),
+            (['-O2'], False, True),
+            (['-O2', '--js-opts', '1'], True, False), # user asked
+            (['-O2', '-s', 'EMTERPRETIFY=1'], True, False), # option forced
+            (['-O2', '-s', 'EVAL_CTORS=1'], False, False), # ctor evaller uses js opts, but is not a js opt, and doesn't force other js opts
+            (['-O2', '-s', 'OUTLINING_LIMIT=1000'], True, False), # option forced
+            (['-O2', '-s', "BINARYEN_METHOD='interpret-s-expr,asmjs'"], True, False), # asmjs in methods means we need good asm.js
+            (['-O3'], False, True),
+            (['-Oz'], False, False), # even though we run ctor evaller, don't run js opts, but we can't only-wasm due to ctor-evaller running js opts internally
+          ]:
+          print args, 'js opts:', expect_js_opts, 'only-wasm:', expect_only_wasm
+          try_delete('a.out.js')
+          output, err = Popen([PYTHON, EMCC, path_from_root('tests', 'core', 'test_i64.c'), '-s', 'BINARYEN=1', '-s', 'BINARYEN_METHOD="interpret-s-expr"'] + args, stdout=PIPE, stderr=PIPE).communicate()
+          assert expect_js_opts == ('applying js optimization passes:' in err), err
+          assert expect_only_wasm == ('-emscripten-only-wasm' in err and '--wasm-only' in err), err # check both flag to fastcomp and to asm2wasm
+          wast = open('a.out.wast').read()
+          i64s = wast.count('(i64.')
+          print '    seen i64s:', i64s
+          assert expect_only_wasm == (i64s > 30), 'i64 opts can be emitted in only-wasm mode, but not normally' # note we emit a few i64s even without wasm-only, when we replace udivmoddi (around 15 such)
+      finally:
+        del os.environ['EMCC_DEBUG']
+
+  def test_binaryen_and_precise_f32(self):
+    if os.environ.get('EMCC_DEBUG'): return self.skip('cannot run in debug mode')
+
+    try:
+      os.environ['EMCC_DEBUG'] = '1'
+      for args, expect in [
+          ([], True),
+          (['-s', 'PRECISE_F32=0'], True), # disabled, but no asm.js, so we definitely want f32
+          (['-s', 'PRECISE_F32=0', '-s', 'BINARYEN_METHOD="asmjs"'], False), # disabled, and we need the asm.js
+          (['-s', 'PRECISE_F32=1'], True),
+          (['-s', 'PRECISE_F32=2'], True),
+        ]:
+        print args, expect
+        try_delete('a.out.js')
+        with clean_write_access_to_canonical_temp_dir():
+          output, err = Popen([PYTHON, EMCC, path_from_root('tests', 'hello_world.cpp')] + args + ['-s', 'BINARYEN=1'], stdout=PIPE, stderr=PIPE).communicate()
+        assert expect == (' -emscripten-precise-f32' in err)
+        self.assertContained('hello, world!', run_js('a.out.js'))
+    finally:
+      del os.environ['EMCC_DEBUG']
+
+  def test_binaryen_names(self):
+    sizes = {}
+    for args, expect_names in [
+        ([], True), # -O0 has debug info by default
+        (['-g'], True),
+        (['-O1'], False),
+        (['-O2'], False),
+        (['-O2', '-g'], True),
+        (['-O2', '-g1'], False),
+        (['-O2', '-g2'], True),
+        (['-O2', '--profiling'], True),
+        (['-O2', '--profiling-funcs'], True),
+      ]:
+      print args, expect_names
+      try_delete('a.out.js')
+      subprocess.check_call([PYTHON, EMCC, path_from_root('tests', 'hello_world.cpp')] + args + ['-s', 'BINARYEN=1', '-s', 'BINARYEN_METHOD="interpret-binary"'])
+      code = open('a.out.wasm', 'rb').read()
+      assert ('__fflush_unlocked' in code) == expect_names, 'an internal function not exported nor imported must only appear in the binary if we have a names section'
+      sizes[str(args)] = os.stat('a.out.wasm').st_size
+      self.assertContained('hello, world!', run_js('a.out.js'))
+    print sizes
+    assert sizes["['-O2']"] < sizes["['-O2', '--profiling-funcs']"], 'when -profiling-funcs, the size increases due to function names'
 

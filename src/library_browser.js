@@ -996,8 +996,9 @@ var LibraryBrowser = {
     var _suffix = Pointer_stringify(suffix);
     if (!Browser.asyncPrepareDataCounter) Browser.asyncPrepareDataCounter = 0;
     var name = 'prepare_data_' + (Browser.asyncPrepareDataCounter++) + '.' + _suffix;
-    var cname = _malloc(name.length+1);
-    writeStringToMemory(name, cname);
+    var lengthAsUTF8 = lengthBytesUTF8(name);
+    var cname = _malloc(lengthAsUTF8+1);
+    stringToUTF8(name, cname, lengthAsUTF8+1);
     FS.createPreloadedFile(
       '/',
       name,
@@ -1074,7 +1075,7 @@ var LibraryBrowser = {
       if (!window['setImmediate']) {
         // Emulate setImmediate. (note: not a complete polyfill, we don't emulate clearImmediate() to keep code size to minimum, since not needed)
         var setImmediates = [];
-        var emscriptenMainLoopMessageId = '__emcc';
+        var emscriptenMainLoopMessageId = 'setimmediate';
         function Browser_setImmediate_messageHandler(event) {
           if (event.source === window && event.data === emscriptenMainLoopMessageId) {
             event.stopPropagation();
@@ -1084,7 +1085,11 @@ var LibraryBrowser = {
         window.addEventListener("message", Browser_setImmediate_messageHandler, true);
         window['setImmediate'] = function Browser_emulated_setImmediate(func) {
           setImmediates.push(func);
-          window.postMessage(emscriptenMainLoopMessageId, "*");
+          if (ENVIRONMENT_IS_WORKER) {
+            if (Module['setImmediates'] === undefined) Module['setImmediates'] = [];
+            Module['setImmediates'].push(func);
+            window.postMessage({target: emscriptenMainLoopMessageId}); // In --proxy-to-worker, route the message via proxyClient.js
+          } else window.postMessage(emscriptenMainLoopMessageId, "*"); // On the main thread, can just send the message to itself.
         }
       }
       Browser.mainLoop.scheduler = function Browser_mainLoop_scheduler_setImmediate() {

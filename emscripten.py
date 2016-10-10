@@ -136,6 +136,8 @@ def get_and_parse_backend(infile, settings, temp_files, DEBUG):
         backend_args += ['-emscripten-no-exit-runtime']
       if settings['BINARYEN']:
         backend_args += ['-emscripten-wasm']
+        if shared.Building.is_wasm_only():
+          backend_args += ['-emscripten-only-wasm']
       if settings['CYBERDWARF']:
         backend_args += ['-enable-cyberdwarf']
 
@@ -374,7 +376,7 @@ def function_tables_and_exports(funcs, metadata, mem_init, glue, forwarded_data,
     for k, v in metadata['asmConsts'].iteritems():
       const = v[0].encode('utf-8')
       sigs = v[1]
-      if const[0] == '"' and const[-1] == '"':
+      if len(const) > 1 and const[0] == '"' and const[-1] == '"':
         const = const[1:-1]
       const = '{ ' + const + ' }'
       args = []
@@ -651,7 +653,8 @@ function _emscripten_asm_const_%s(%s) {
              '(it is worth building your source files with -Werror (warnings are errors), as warnings can indicate undefined behavior which can cause this)' + \
              '"); ' + extra
 
-    basic_funcs = ['abort', 'assert'] + [m.replace('.', '_') for m in math_envs]
+    basic_funcs = ['abort', 'assert', 'enlargeMemory', 'getTotalMemory'] + [m.replace('.', '_') for m in math_envs]
+    if settings['ABORTING_MALLOC']: basic_funcs += ['abortOnCannotGrowMemory']
     if settings['STACK_OVERFLOW_CHECK']: basic_funcs += ['abortStackOverflow']
 
     asm_safe_heap = settings['SAFE_HEAP'] and not settings['SAFE_HEAP_LOG'] and not settings['RELOCATABLE'] # optimized safe heap in asm, when we can
@@ -667,10 +670,8 @@ function _emscripten_asm_const_%s(%s) {
         basic_funcs += ['nullFunc_' + sig]
         asm_setup += '\nfunction nullFunc_' + sig + '(x) { ' + get_function_pointer_error(sig) + 'abort(x) }\n'
 
-    basic_vars = ['STACKTOP', 'STACK_MAX', 'tempDoublePtr', 'ABORT']
+    basic_vars = ['STACKTOP', 'STACK_MAX', 'DYNAMICTOP_PTR', 'tempDoublePtr', 'ABORT']
     basic_float_vars = []
-
-    if settings['SAFE_HEAP']: basic_vars += ['DYNAMICTOP']
 
     if metadata.get('preciseI64MathUsed'):
       basic_vars += ['cttz_i8']
@@ -1063,7 +1064,7 @@ function setThrew(threw, value) {
 '''] + ['' if not settings['SAFE_HEAP'] else '''
 function setDynamicTop(value) {
   value = value | 0;
-  DYNAMICTOP = value;
+  HEAP32[DYNAMICTOP_PTR>>2] = value;
 }
 '''] + ['' if not asm_safe_heap else '''
 function SAFE_HEAP_STORE(dest, value, bytes) {
@@ -1071,7 +1072,7 @@ function SAFE_HEAP_STORE(dest, value, bytes) {
   value = value | 0;
   bytes = bytes | 0;
   if ((dest|0) <= 0) segfault();
-  if (((dest + bytes)|0) > (DYNAMICTOP|0)) segfault();
+  if (((dest + bytes)|0) > (HEAP32[DYNAMICTOP_PTR>>2]|0)) segfault();
   if ((bytes|0) == 4) {
     if ((dest&3)) alignfault();
     HEAP32[dest>>2] = value;
@@ -1087,7 +1088,7 @@ function SAFE_HEAP_STORE_D(dest, value, bytes) {
   value = +value;
   bytes = bytes | 0;
   if ((dest|0) <= 0) segfault();
-  if (((dest + bytes)|0) > (DYNAMICTOP|0)) segfault();
+  if (((dest + bytes)|0) > (HEAP32[DYNAMICTOP_PTR>>2]|0)) segfault();
   if ((bytes|0) == 8) {
     if ((dest&7)) alignfault();
     HEAPF64[dest>>3] = value;
@@ -1101,7 +1102,7 @@ function SAFE_HEAP_LOAD(dest, bytes, unsigned) {
   bytes = bytes | 0;
   unsigned = unsigned | 0;
   if ((dest|0) <= 0) segfault();
-  if ((dest + bytes|0) > (DYNAMICTOP|0)) segfault();
+  if ((dest + bytes|0) > (HEAP32[DYNAMICTOP_PTR>>2]|0)) segfault();
   if ((bytes|0) == 4) {
     if ((dest&3)) alignfault();
     return HEAP32[dest>>2] | 0;
@@ -1120,7 +1121,7 @@ function SAFE_HEAP_LOAD_D(dest, bytes) {
   dest = dest | 0;
   bytes = bytes | 0;
   if ((dest|0) <= 0) segfault();
-  if ((dest + bytes|0) > (DYNAMICTOP|0)) segfault();
+  if ((dest + bytes|0) > (HEAP32[DYNAMICTOP_PTR>>2]|0)) segfault();
   if ((bytes|0) == 8) {
     if ((dest&7)) alignfault();
     return +HEAPF64[dest>>3];
@@ -1325,6 +1326,9 @@ def emscript_wasm_backend(infile, settings, outfile, libraries=None, compiler_en
       whitelist = ','.join(settings['EXCEPTION_CATCHING_WHITELIST'] or ['__fake'])
       backend_args += ['-emscripten-cxx-exceptions-whitelist=' + whitelist]
 
+    # asm.js-style setjmp/longjmp handling
+    backend_args += ['-enable-emscripten-sjlj']
+
     if DEBUG:
       logging.debug('emscript: llvm wasm backend: ' + ' '.join(backend_args))
       t = time.time()
@@ -1341,6 +1345,7 @@ def emscript_wasm_backend(infile, settings, outfile, libraries=None, compiler_en
     s2wasm_args += ['--emscripten-glue']
     s2wasm_args += ['--global-base=%d' % shared.Settings.GLOBAL_BASE]
     s2wasm_args += ['--initial-memory=%d' % shared.Settings.TOTAL_MEMORY]
+    s2wasm_args += ['--allow-memory-growth'] if shared.Settings.ALLOW_MEMORY_GROWTH else []
     def compiler_rt_fail(): raise Exception('Expected wasm_compiler_rt.a to already be built')
     compiler_rt_lib = shared.Cache.get('wasm_compiler_rt.a', lambda: compiler_rt_fail(), 'a')
     s2wasm_args += ['-l', compiler_rt_lib]
@@ -1400,20 +1405,20 @@ def emscript_wasm_backend(infile, settings, outfile, libraries=None, compiler_en
   # TODO: emit it from s2wasm; for now, we parse it right here
   for line in open(wasm).readlines():
     if line.startswith('  (import '):
-      parts = line.split(' ')
+      parts = line.split()
       # Don't include Invoke wrapper names (for asm.js-style exception handling)
       # in metadata[declares], the invoke wrappers will be generated in
       # this script later.
-      func_name = parts[3][1:]
+      func_name = parts[2][1:-1]
       if not func_name.startswith('invoke_'):
         metadata['declares'].append(func_name)
     elif line.startswith('  (func '):
-      parts = line.split(' ')
-      func_name = parts[3][1:]
+      parts = line.split()
+      func_name = parts[1][1:]
       metadata['implementedFunctions'].append(func_name)
     elif line.startswith('  (export '):
-      parts = line.split(' ')
-      export_name = parts[3][1:-1]
+      parts = line.split()
+      export_name = parts[1][1:-1]
       assert asmjs_mangle(export_name) not in metadata['exports']
       metadata['exports'].append(export_name)
 
@@ -1504,7 +1509,7 @@ def emscript_wasm_backend(infile, settings, outfile, libraries=None, compiler_en
   for k, v in metadata['asmConsts'].iteritems():
     const = v[0].encode('utf-8')
     sigs = v[1]
-    if const[0] == '"' and const[-1] == '"':
+    if len(const) > 1 and const[0] == '"' and const[-1] == '"':
       const = const[1:-1]
     const = '{ ' + const + ' }'
     args = []
@@ -1530,7 +1535,8 @@ return ASM_CONSTS[code](%s);
   outfile.write(pre)
   pre = None
 
-  basic_funcs = ['abort', 'assert']
+  basic_funcs = ['abort', 'assert', 'enlargeMemory', 'getTotalMemory']
+  if settings['ABORTING_MALLOC']: basic_funcs += ['abortOnCannotGrowMemory']
 
   access_quote = access_quoter(settings)
 
@@ -1547,7 +1553,7 @@ return ASM_CONSTS[code](%s);
   def math_fix(g):
     return g if not g.startswith('Math_') else g.split('_')[1]
 
-  basic_vars = ['STACKTOP', 'STACK_MAX', 'ABORT']
+  basic_vars = ['STACKTOP', 'STACK_MAX', 'DYNAMICTOP_PTR', 'ABORT']
   basic_float_vars = []
 
   # Asm.js-style exception handling: invoke wrapper generation
@@ -1555,8 +1561,8 @@ return ASM_CONSTS[code](%s);
   with open(wasm) as f:
     for line in f:
       if line.startswith('  (import '):
-        parts = line.split(' ')
-        func_name = parts[3][1:]
+        parts = line.split()
+        func_name = parts[2][1:-1]
         if func_name.startswith('invoke_'):
           sig = func_name[len('invoke_'):]
           invoke_wrappers += '\n' + shared.JS.make_invoke(sig) + '\n'

@@ -106,6 +106,13 @@ test_modes = [
   'asm2i',
   'asm2nn'
 ]
+nondefault_test_modes = [
+  'binaryen0',
+  'binaryen1',
+  'binaryen2',
+  'binaryen3',
+  'binaryen_native'
+]
 test_index = 0
 
 use_all_engines = os.environ.get('EM_ALL_ENGINES') # generally js engines are equivalent, testing 1 is enough. set this
@@ -139,7 +146,8 @@ class RunnerCore(unittest.TestCase):
     elif '--memory-init-file' in self.emcc_args:
       return int(self.emcc_args[self.emcc_args.index('--memory-init-file')+1])
     else:
-      return ('-O2' in self.emcc_args or '-O3' in self.emcc_args or '-Oz' in self.emcc_args) and not Settings.SIDE_MODULE
+      # side modules handle memory differently; binaryen puts the memory in the wasm module
+      return ('-O2' in self.emcc_args or '-O3' in self.emcc_args or '-Oz' in self.emcc_args) and not (Settings.SIDE_MODULE or Settings.BINARYEN)
 
   def setUp(self):
     Settings.reset()
@@ -1002,7 +1010,8 @@ if __name__ == '__main__':
 
   # Create a list of all known tests so that we can choose from them based on a wildcard search
   all_tests = []
-  suites = test_modes + ['other', 'browser', 'sanity', 'sockets', 'interactive']
+  suites = test_modes + nondefault_test_modes + \
+           ['other', 'browser', 'sanity', 'sockets', 'interactive']
   for m in modules:
     for s in suites:
       if hasattr(m, s):

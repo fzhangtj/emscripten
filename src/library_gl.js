@@ -24,6 +24,7 @@ var LibraryGL = {
     contexts: [],
     currentContext: null,
     offscreenCanvases: {}, // DOM ID -> OffscreenCanvas mappings of <canvas> elements that have their rendering control transferred to offscreen.
+    timerQueriesEXT: [],
 #if USE_WEBGL2
     queries: [],
     samplers: [],
@@ -55,6 +56,7 @@ var LibraryGL = {
     /* { uniforms: {}, // Maps ints back to the opaque WebGLUniformLocation objects.
          maxUniformLength: int, // Cached in order to implement glGetProgramiv(GL_ACTIVE_UNIFORM_MAX_LENGTH)
          maxAttributeLength: int // Cached in order to implement glGetProgramiv(GL_ACTIVE_ATTRIBUTE_MAX_LENGTH)
+         maxUniformBlockNameLength: int // Cached in order to implement glGetProgramiv(GL_ACTIVE_UNIFORM_BLOCK_MAX_NAME_LENGTH)
        } */
 
     stringCache: {},
@@ -613,6 +615,8 @@ var LibraryGL = {
         }
       }
 
+      GLctx.disjointTimerQueryExt = GLctx.getExtension("EXT_disjoint_timer_query");
+
       // These are the 'safe' feature-enabling extensions that don't add any performance impact related to e.g. debugging, and
       // should be enabled by default so that client GLES2/GL code will not need to go through extra hoops to get its stuff working.
       // As new extensions are ratified at http://www.khronos.org/registry/webgl/extensions/ , feel free to add your new extensions
@@ -661,7 +665,8 @@ var LibraryGL = {
       GL.programInfos[program] = {
         uniforms: {},
         maxUniformLength: 0, // This is eagerly computed below, since we already enumerate all uniforms anyway.
-        maxAttributeLength: -1 // This is lazily computed and cached, computed when/if first asked, "-1" meaning not computed yet.
+        maxAttributeLength: -1, // This is lazily computed and cached, computed when/if first asked, "-1" meaning not computed yet.
+        maxUniformBlockNameLength: -1 // Lazily computed as well
       };
 
       var ptable = GL.programInfos[program];
@@ -801,12 +806,6 @@ var LibraryGL = {
         var formats = GLctx.getParameter(0x86A3 /*GL_COMPRESSED_TEXTURE_FORMATS*/);
         ret = formats.length;
         break;
-      case 0x8B9A: // GL_IMPLEMENTATION_COLOR_READ_TYPE
-        ret = 0x1401; // GL_UNSIGNED_BYTE
-        break;
-      case 0x8B9B: // GL_IMPLEMENTATION_COLOR_READ_FORMAT
-        ret = 0x1908; // GL_RGBA
-        break;
 #if USE_WEBGL2
       case 0x821D: // GL_NUM_EXTENSIONS
         if (GLctx.canvas.GLctxObject.version < 2) {
@@ -853,6 +852,11 @@ var LibraryGL = {
               case 0x8CA6: // FRAMEBUFFER_BINDING
               case 0x8CA7: // RENDERBUFFER_BINDING
               case 0x8069: // TEXTURE_BINDING_2D
+#if USE_WEBGL2
+              case 0x85B5: // GL_VERTEX_ARRAY_BINDING
+              case 0x8919: // GL_SAMPLER_BINDING
+              case 0x8E25: // GL_TRANSFORM_FEEDBACK_BINDING
+#endif
               case 0x8514: { // TEXTURE_BINDING_CUBE_MAP
                 ret = 0;
                 break;
@@ -882,6 +886,13 @@ var LibraryGL = {
                      result instanceof WebGLProgram ||
                      result instanceof WebGLFramebuffer ||
                      result instanceof WebGLRenderbuffer ||
+#if USE_WEBGL2
+                     result instanceof WebGLQuery ||
+                     result instanceof WebGLSampler ||
+                     result instanceof WebGLSync ||
+                     result instanceof WebGLTransformFeedback ||
+                     result instanceof WebGLVertexArrayObject ||
+#endif
                      result instanceof WebGLTexture) {
             ret = result.name | 0;
           } else {
@@ -1392,6 +1403,131 @@ var LibraryGL = {
     GLctx.bufferSubData(target, offset, HEAPU8.subarray(data, data+size));
   },
 
+  // Queries EXT
+  glGenQueriesEXT__sig: 'vii',
+  glGenQueriesEXT: function(n, ids) {
+    for (var i = 0; i < n; i++) {
+      var query = GLctx.disjointTimerQueryExt['createQueryEXT']();
+      if (!query) {
+        GL.recordError(0x0502 /* GL_INVALID_OPERATION */);
+#if GL_ASSERTIONS
+        Module.printErr('GL_INVALID_OPERATION in glGenQueriesEXT: GLctx.disjointTimerQueryExt.createQueryEXT returned null - most likely GL context is lost!');
+#endif
+        while(i < n) {{{ makeSetValue('ids', 'i++*4', 0, 'i32') }}};
+        return;
+      }
+      var id = GL.getNewId(GL.timerQueriesEXT);
+      query.name = id;
+      GL.timerQueriesEXT[id] = query;
+      {{{ makeSetValue('ids', 'i*4', 'id', 'i32') }}};
+    }
+  },
+
+  glDeleteQueriesEXT__sig: 'vii',
+  glDeleteQueriesEXT: function(n, ids) {
+    for (var i = 0; i < n; i++) {
+      var id = {{{ makeGetValue('ids', 'i*4', 'i32') }}};
+      var query = GL.timerQueriesEXT[id];
+      if (!query) continue; // GL spec: "unused names in ids are ignored, as is the name zero."
+      GLctx.disjointTimerQueryExt['deleteQueryEXT'](query);
+      GL.timerQueriesEXT[id] = null;
+    }
+  },
+
+  glIsQueryEXT__sig: 'ii',
+  glIsQueryEXT: function(id) {
+    var query = GL.timerQueriesEXT[query];
+    if (!query) return 0;
+    return GLctx.disjointTimerQueryExt['isQueryEXT'](query);
+  },
+
+  glBeginQueryEXT__sig: 'vii',
+  glBeginQueryEXT: function(target, id) {
+#if GL_ASSERTIONS
+    GL.validateGLObjectID(GL.timerQueriesEXT, id, 'glBeginQueryEXT', 'id');
+#endif
+    GLctx.disjointTimerQueryExt['beginQueryEXT'](target, id ? GL.timerQueriesEXT[id] : null);
+  },
+
+  glEndQueryEXT__sig: 'vi',
+  glEndQueryEXT: function(target) {
+    GLctx.disjointTimerQueryExt['endQueryEXT'](target);
+  },
+
+  glQueryCounterEXT__sig: 'vii',
+  glQueryCounterEXT: function(id, target) {
+#if GL_ASSERTIONS
+    GL.validateGLObjectID(GL.timerQueriesEXT, id, 'glQueryCounterEXT', 'id');
+#endif
+    GLctx.disjointTimerQueryExt['queryCounterEXT'](id ? GL.timerQueriesEXT[id] : null, target);
+  },
+
+  glGetQueryivEXT__sig: 'viii',
+  glGetQueryivEXT: function(target, pname, params) {
+    if (!params) {
+      // GLES2 specification does not specify how to behave if params is a null pointer. Since calling this function does not make sense
+      // if p == null, issue a GL error to notify user about it. 
+#if GL_ASSERTIONS
+      Module.printErr('GL_INVALID_VALUE in glGetQueryivEXT(target=' + target +', pname=' + pname + ', params=0): Function called with null out pointer!');
+#endif
+      GL.recordError(0x0501 /* GL_INVALID_VALUE */);
+      return;
+    }
+    {{{ makeSetValue('params', '0', 'GLctx.disjointTimerQueryExt[\'getQueryEXT\'](target, pname)', 'i32') }}};
+  },
+
+  glGetQueryObjectivEXT__sig: 'viii',
+  glGetQueryObjectivEXT: function(id, pname, params) {
+    if (!params) {
+      // GLES2 specification does not specify how to behave if params is a null pointer. Since calling this function does not make sense
+      // if p == null, issue a GL error to notify user about it. 
+#if GL_ASSERTIONS
+      Module.printErr('GL_INVALID_VALUE in glGetQueryObject(u)ivEXT(id=' + id +', pname=' + pname + ', params=0): Function called with null out pointer!');
+#endif
+      GL.recordError(0x0501 /* GL_INVALID_VALUE */);
+      return;
+    }
+#if GL_ASSERTIONS
+    GL.validateGLObjectID(GL.timerQueriesEXT, id, 'glGetQueryObjectivEXT', 'id');
+#endif
+    var query = GL.timerQueriesEXT[id];
+    var param = GLctx.disjointTimerQueryExt['getQueryObjectEXT'](query, pname);
+    var ret;
+    if (typeof param == 'boolean') {
+      ret = param ? 1 : 0;
+    } else {
+      ret = param;
+    }
+    {{{ makeSetValue('params', '0', 'ret', 'i32') }}};
+  },
+  glGetQueryObjectuivEXT: 'glGetQueryObjectivEXT',
+
+  glGetQueryObjecti64vEXT__sig: 'viii',
+  glGetQueryObjecti64vEXT: function(id, pname, params) {
+    if (!params) {
+      // GLES2 specification does not specify how to behave if params is a null pointer. Since calling this function does not make sense
+      // if p == null, issue a GL error to notify user about it. 
+#if GL_ASSERTIONS
+      Module.printErr('GL_INVALID_VALUE in glGetQueryObject(u)i64vEXT(id=' + id +', pname=' + pname + ', params=0): Function called with null out pointer!');
+#endif
+      GL.recordError(0x0501 /* GL_INVALID_VALUE */);
+      return;
+    }
+#if GL_ASSERTIONS
+    GL.validateGLObjectID(GL.timerQueriesEXT, id, 'glGetQueryObjecti64vEXT', 'id');
+#endif
+    var query = GL.timerQueriesEXT[id];
+    var param = GLctx.disjointTimerQueryExt['getQueryObjectEXT'](query, pname);
+    var ret;
+    if (typeof param == 'boolean') {
+      ret = param ? 1 : 0;
+    } else {
+      ret = param;
+    }
+    {{{ makeSetValue('params', '0', 'ret', 'i64') }}};
+  },
+  glGetQueryObjectui64vEXT: 'glGetQueryObjecti64vEXT',
+
 #if FULL_ES3
   $emscriptenWebGLGetBufferBinding: function(target) {
     switch(target) {
@@ -1474,7 +1610,7 @@ var LibraryGL = {
   glFlushMappedBufferRange: function(target, offset, length) {
     if (!emscriptenWebGLValidateMapBufferTarget(target)) {
       GL.recordError(0x0500/*GL_INVALID_ENUM*/);
-      Module.printErr('GL_INVALID_ENUM in glUnmapBuffer');
+      Module.printErr('GL_INVALID_ENUM in glFlushMappedBufferRange');
       return 0;
     }
 
@@ -1585,7 +1721,6 @@ var LibraryGL = {
       var query = GL.queries[id];
       if (!query) continue; // GL spec: "unused names in ids are ignored, as is the name zero."
       GLctx['deleteQuery'](query);
-      query.name = 0;
       GL.queries[id] = null;
     }
   },
@@ -1829,10 +1964,9 @@ var LibraryGL = {
     var info = GLctx['getTransformFeedbackVarying'](program, index);
     if (!info) return; // If an error occurred, the return parameters length, size, type and name will be unmodified.
 
-    var infoname = info.name.slice(0, Math.max(0, bufSize - 1));
     if (name && bufSize > 0) {
-      writeStringToMemory(infoname, name);
-      if (length) {{{ makeSetValue('length', '0', 'infoname.length', 'i32') }}};
+      var numBytesWrittenExclNull = stringToUTF8(info.name, name, bufSize);
+      if (length) {{{ makeSetValue('length', '0', 'numBytesWrittenExclNull', 'i32') }}};
     } else {
       if (length) {{{ makeSetValue('length', '0', 0, 'i32') }}};
     }
@@ -2026,14 +2160,21 @@ var LibraryGL = {
 #endif
     program = GL.programs[program];
 
-    var result = GLctx['getActiveUniformBlockParameter'](program, uniformBlockIndex, pname);
-    if (!result) return; // If an error occurs, nothing will be written to params.
-    if (typeof result == 'number') {
-      {{{ makeSetValue('params', '0', 'result', 'i32') }}};
-    } else {
-      for (var i = 0; i < result.length; i++) {
-        {{{ makeSetValue('params', 'i*4', 'result[i]', 'i32') }}};
-      }
+    switch(pname) {
+      case 0x8A41: /* GL_UNIFORM_BLOCK_NAME_LENGTH */
+        var name = GLctx['getActiveUniformBlockName'](program, uniformBlockIndex);
+        {{{ makeSetValue('params', 0, 'name.length+1', 'i32') }}};
+        return;
+      default:
+        var result = GLctx['getActiveUniformBlockParameter'](program, uniformBlockIndex, pname);
+        if (!result) return; // If an error occurs, nothing will be written to params.
+        if (typeof result == 'number') {
+          {{{ makeSetValue('params', '0', 'result', 'i32') }}};
+        } else {
+          for (var i = 0; i < result.length; i++) {
+            {{{ makeSetValue('params', 'i*4', 'result[i]', 'i32') }}};
+          }
+        }
     }
   },
 
@@ -2046,10 +2187,9 @@ var LibraryGL = {
 
     var result = GLctx['getActiveUniformBlockName'](program, uniformBlockIndex);
     if (!result) return; // If an error occurs, nothing will be written to uniformBlockName or length.
-    var name = result.slice(0, Math.max(0, bufSize - 1));
     if (uniformBlockName && bufSize > 0) {
-      writeStringToMemory(name, uniformBlockName);
-      if (length) {{{ makeSetValue('length', '0', 'name.length', 'i32') }}};
+      var numBytesWrittenExclNull = stringToUTF8(result, uniformBlockName, bufSize);
+      if (length) {{{ makeSetValue('length', '0', 'numBytesWrittenExclNull', 'i32') }}};
     } else {
       if (length) {{{ makeSetValue('length', '0', 0, 'i32') }}};
     }
@@ -2385,7 +2525,9 @@ var LibraryGL = {
     }
 #endif
     var data = GLctx.getVertexAttrib(index, pname);
-    if (typeof data == 'number' || typeof data == 'boolean') {
+    if (pname == 0x889F/*VERTEX_ATTRIB_ARRAY_BUFFER_BINDING*/) {
+      {{{ makeSetValue('params', '0', 'data["name"]', 'i32') }}};
+    } else if (typeof data == 'number' || typeof data == 'boolean') {
       switch (type) {
         case 'Integer': {{{ makeSetValue('params', '0', 'data', 'i32') }}}; break;
         case 'Float': {{{ makeSetValue('params', '0', 'data', 'float') }}}; break;
@@ -2464,10 +2606,9 @@ var LibraryGL = {
     var info = GLctx.getActiveUniform(program, index);
     if (!info) return; // If an error occurs, nothing will be written to length, size, type and name.
 
-    var infoname = info.name.slice(0, Math.max(0, bufSize - 1));
     if (bufSize > 0 && name) {
-      writeStringToMemory(infoname, name);
-      if (length) {{{ makeSetValue('length', '0', 'infoname.length', 'i32') }}};
+      var numBytesWrittenExclNull = stringToUTF8(info.name, name, bufSize);
+      if (length) {{{ makeSetValue('length', '0', 'numBytesWrittenExclNull', 'i32') }}};
     } else {
       if (length) {{{ makeSetValue('length', '0', 0, 'i32') }}};
     }
@@ -3215,10 +3356,9 @@ var LibraryGL = {
     var info = GLctx.getActiveAttrib(program, index);
     if (!info) return; // If an error occurs, nothing will be written to length, size and type and name.
 
-    var infoname = info.name.slice(0, Math.max(0, bufSize - 1));
     if (bufSize > 0 && name) {
-      writeStringToMemory(infoname, name);
-      if (length) {{{ makeSetValue('length', '0', 'infoname.length', 'i32') }}};
+      var numBytesWrittenExclNull = stringToUTF8(info.name, name, bufSize);
+      if (length) {{{ makeSetValue('length', '0', 'numBytesWrittenExclNull', 'i32') }}};
     } else {
       if (length) {{{ makeSetValue('length', '0', 0, 'i32') }}};
     }
@@ -3282,10 +3422,9 @@ var LibraryGL = {
 #endif
     var result = GLctx.getShaderSource(GL.shaders[shader]);
     if (!result) return; // If an error occurs, nothing will be written to length or source.
-    result = result.slice(0, Math.max(0, bufSize - 1));
     if (bufSize > 0 && source) {
-      writeStringToMemory(result, source);
-      if (length) {{{ makeSetValue('length', '0', 'result.length', 'i32') }}};
+      var numBytesWrittenExclNull = stringToUTF8(result, source, bufSize);
+      if (length) {{{ makeSetValue('length', '0', 'numBytesWrittenExclNull', 'i32') }}};
     } else {
       if (length) {{{ makeSetValue('length', '0', 0, 'i32') }}};
     }
@@ -3306,10 +3445,9 @@ var LibraryGL = {
 #endif
     var log = GLctx.getShaderInfoLog(GL.shaders[shader]);
     if (log === null) log = '(unknown error)';
-    log = log.substr(0, maxLength - 1);
     if (maxLength > 0 && infoLog) {
-      writeStringToMemory(log, infoLog);
-      if (length) {{{ makeSetValue('length', '0', 'log.length', 'i32') }}};
+      var numBytesWrittenExclNull = stringToUTF8(log, infoLog, maxLength);
+      if (length) {{{ makeSetValue('length', '0', 'numBytesWrittenExclNull', 'i32') }}};
     } else {
       if (length) {{{ makeSetValue('length', '0', 0, 'i32') }}};
     }
@@ -3352,51 +3490,52 @@ var LibraryGL = {
 #if GL_ASSERTIONS
     GL.validateGLObjectID(GL.programs, program, 'glGetProgramiv', 'program');
 #endif
+
+    if (program >= GL.counter) {
+#if GL_ASSERTIONS
+      Module.printErr('GL_INVALID_VALUE in glGetProgramiv(program=' + program + ', pname=' + pname + ', p=0x' + p.toString(16) + '): The specified program object name was not generated by GL!');
+#endif
+      GL.recordError(0x0501 /* GL_INVALID_VALUE */);
+      return;
+    }
+
+    var ptable = GL.programInfos[program];
+    if (!ptable) {
+#if GL_ASSERTIONS
+      Module.printErr('GL_INVALID_OPERATION in glGetProgramiv(program=' + program + ', pname=' + pname + ', p=0x' + p.toString(16) + '): The specified GL object name does not refer to a program object!');
+#endif
+      GL.recordError(0x0502 /* GL_INVALID_OPERATION */);
+      return;
+    }
+
     if (pname == 0x8B84) { // GL_INFO_LOG_LENGTH
       var log = GLctx.getProgramInfoLog(GL.programs[program]);
       if (log === null) log = '(unknown error)';
       {{{ makeSetValue('p', '0', 'log.length + 1', 'i32') }}};
     } else if (pname == 0x8B87 /* GL_ACTIVE_UNIFORM_MAX_LENGTH */) {
-      var ptable = GL.programInfos[program];
-      if (ptable) {
-        {{{ makeSetValue('p', '0', 'ptable.maxUniformLength', 'i32') }}};
-        return;
-      } else if (program < GL.counter) {
-#if GL_ASSERTIONS
-        Module.printErr("A GL object " + program + " that is not a program object was passed to glGetProgramiv!");
-#endif
-        GL.recordError(0x0502 /* GL_INVALID_OPERATION */);
-      } else {
-#if GL_ASSERTIONS
-        Module.printErr("A GL object " + program + " that did not come from GL was passed to glGetProgramiv!");
-#endif
-        GL.recordError(0x0501 /* GL_INVALID_VALUE */);
-      }
+      {{{ makeSetValue('p', '0', 'ptable.maxUniformLength', 'i32') }}};
     } else if (pname == 0x8B8A /* GL_ACTIVE_ATTRIBUTE_MAX_LENGTH */) {
-      var ptable = GL.programInfos[program];
-      if (ptable) {
-        if (ptable.maxAttributeLength == -1) {
-          var program = GL.programs[program];
-          var numAttribs = GLctx.getProgramParameter(program, GLctx.ACTIVE_ATTRIBUTES);
-          ptable.maxAttributeLength = 0; // Spec says if there are no active attribs, 0 must be returned.
-          for (var i = 0; i < numAttribs; ++i) {
-            var activeAttrib = GLctx.getActiveAttrib(program, i);
-            ptable.maxAttributeLength = Math.max(ptable.maxAttributeLength, activeAttrib.name.length+1);
-          }
+      if (ptable.maxAttributeLength == -1) {
+        var program = GL.programs[program];
+        var numAttribs = GLctx.getProgramParameter(program, GLctx.ACTIVE_ATTRIBUTES);
+        ptable.maxAttributeLength = 0; // Spec says if there are no active attribs, 0 must be returned.
+        for (var i = 0; i < numAttribs; ++i) {
+          var activeAttrib = GLctx.getActiveAttrib(program, i);
+          ptable.maxAttributeLength = Math.max(ptable.maxAttributeLength, activeAttrib.name.length+1);
         }
-        {{{ makeSetValue('p', '0', 'ptable.maxAttributeLength', 'i32') }}};
-        return;
-      } else if (program < GL.counter) {
-#if GL_ASSERTIONS
-        Module.printErr("A GL object " + program + " that is not a program object was passed to glGetProgramiv!");
-#endif
-        GL.recordError(0x0502 /* GL_INVALID_OPERATION */);
-      } else {
-#if GL_ASSERTIONS
-        Module.printErr("A GL object " + program + " that did not come from GL was passed to glGetProgramiv!");
-#endif
-        GL.recordError(0x0501 /* GL_INVALID_VALUE */);
       }
+      {{{ makeSetValue('p', '0', 'ptable.maxAttributeLength', 'i32') }}};
+    } else if (pname == 0x8A35 /* GL_ACTIVE_UNIFORM_BLOCK_MAX_NAME_LENGTH */) {
+      if (ptable.maxUniformBlockNameLength == -1) {
+        var program = GL.programs[program];
+        var numBlocks = GLctx.getProgramParameter(program, GLctx.ACTIVE_UNIFORM_BLOCKS);
+        ptable.maxUniformBlockNameLength = 0;
+        for (var i = 0; i < numBlocks; ++i) {
+          var activeBlockName = GLctx.getActiveUniformBlockName(program, i);
+          ptable.maxUniformBlockNameLength = Math.max(ptable.maxAttributeLength, activeBlockName.length+1);
+        }
+      }
+      {{{ makeSetValue('p', '0', 'ptable.maxUniformBlockNameLength', 'i32') }}};
     } else {
       {{{ makeSetValue('p', '0', 'GLctx.getProgramParameter(GL.programs[program], pname)', 'i32') }}};
     }
@@ -3477,10 +3616,9 @@ var LibraryGL = {
     var log = GLctx.getProgramInfoLog(GL.programs[program]);
     if (log === null) log = '(unknown error)';
 
-    log = log.substr(0, maxLength - 1);
     if (maxLength > 0 && infoLog) {
-      writeStringToMemory(log, infoLog);
-      if (length) {{{ makeSetValue('length', '0', 'log.length', 'i32') }}};
+      var numBytesWrittenExclNull = stringToUTF8(log, infoLog, maxLength);
+      if (length) {{{ makeSetValue('length', '0', 'numBytesWrittenExclNull', 'i32') }}};
     } else {
       if (length) {{{ makeSetValue('length', '0', 0, 'i32') }}};
     }
@@ -4313,7 +4451,7 @@ var LibraryGL = {
     } else if (GL.shaders[id]) {
       _glGetShaderInfoLog(id, maxLength, length, infoLog);
     } else {
-      Module.printErr('WARNING: getObjectParameteriv received invalid id: ' + id);
+      Module.printErr('WARNING: glGetInfoLog received invalid id: ' + id);
     }
   },
   glGetInfoLogARB: 'glGetInfoLog',
@@ -7405,8 +7543,8 @@ glFuncs.forEach(function(data) {
   var num = data[0];
   var names = data[1];
   var args = range(num).map(function(i) { return 'x' + i }).join(', ');
-  var plainStub = '(function(' + args + ') { GLctx.NAME(' + args + ') })';
-  var returnStub = '(function(' + args + ') { return GLctx.NAME(' + args + ') })';
+  var plainStub = '(function(' + args + ') { GLctx[\'NAME\'](' + args + ') })';
+  var returnStub = '(function(' + args + ') { return GLctx[\'NAME\'](' + args + ') })';
   var sigEnd = range(num).map(function() { return 'i' }).join('');
   names.split(' ').forEach(function(name) {
     if (name.length == 0) return;

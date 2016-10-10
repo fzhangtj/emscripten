@@ -1219,7 +1219,11 @@
             "EMSCRIPTEN_FULLSCREEN_CANVAS_SCALE_HIDEF",
             "EMSCRIPTEN_FULLSCREEN_FILTERING_DEFAULT",
             "EMSCRIPTEN_FULLSCREEN_FILTERING_NEAREST",
-            "EMSCRIPTEN_FULLSCREEN_FILTERING_BILINEAR"
+            "EMSCRIPTEN_FULLSCREEN_FILTERING_BILINEAR",
+
+            "EM_HTML5_SHORT_STRING_LEN_BYTES",
+            "EM_HTML5_MEDIUM_STRING_LEN_BYTES",
+            "EM_HTML5_LONG_STRING_LEN_BYTES"
         ],
         "structs": {
             "EmscriptenKeyboardEvent": [
@@ -1447,7 +1451,6 @@
             "EM_PROXIED_FPATHCONF",
             "EM_PROXIED_CONFSTR",
             "EM_PROXIED_SYSCONF",
-            "EM_PROXIED_SBRK",
             "EM_PROXIED_ATEXIT",
             "EM_PROXIED_GETENV",
             "EM_PROXIED_CLEARENV",
