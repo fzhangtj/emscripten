@@ -274,17 +274,19 @@ If manually bisecting:
 
   # Tests that if the output files have single or double quotes in them, that it will be handled by correctly escaping the names.
   def test_output_file_escaping(self):
-    d = 'dir with \' and \"'
+    tricky_part = '\'' if WINDOWS else '\' and \"' # On Windows, files/directories may not contain a double quote character. On non-Windowses they can, so test that.
+
+    d = 'dir with ' + tricky_part
     abs_d = os.path.join(self.get_dir(), d)
     try:
       os.mkdir(abs_d)
     except:
       pass
-    txt = 'file with \' and \".txt'
+    txt = 'file with ' + tricky_part + '.txt'
     abs_txt = os.path.join(abs_d, txt)
     open(abs_txt, 'w').write('load me right before')
 
-    cpp = os.path.join(d, 'file with \' and \".cpp')
+    cpp = os.path.join(d, 'file with ' + tricky_part + '.cpp')
     open(cpp, 'w').write(self.with_report_result(r'''
       #include <stdio.h>
       #include <string.h>
@@ -302,10 +304,10 @@ If manually bisecting:
       }
     ''' % (txt.replace('\'', '\\\'').replace('\"', '\\"'))))
 
-    data_file = os.path.join(abs_d, 'file with \' and \".data')
-    data_js_file = os.path.join(abs_d, 'file with \' and \".js')
+    data_file = os.path.join(abs_d, 'file with ' + tricky_part + '.data')
+    data_js_file = os.path.join(abs_d, 'file with ' + tricky_part + '.js')
     Popen([PYTHON, FILE_PACKAGER, data_file, '--use-preload-cache', '--indexedDB-name=testdb', '--preload', abs_txt + '@' + txt, '--js-output=' + data_js_file]).communicate()
-    page_file = os.path.join(d, 'file with \' and \".html')
+    page_file = os.path.join(d, 'file with ' + tricky_part + '.html')
     abs_page_file = os.path.join(self.get_dir(), page_file)
     Popen([PYTHON, EMCC, cpp, '--pre-js', data_js_file, '-o', abs_page_file]).communicate()
     self.run_browser(page_file, '|load me right before|.', '/report_result?0')
@@ -665,17 +667,17 @@ window.close = function() {
       open(to + '.js', 'w').write(js_mod(open('test.js').read()))
 
     # run with noProxy, but make main thread fail
-    copy('two', lambda original: original.replace('function _main($argc,$argv) {', 'function _main($argc,$argv) { if (ENVIRONMENT_IS_WEB) { var xhr = new XMLHttpRequest(); xhr.open("GET", "http://localhost:8888/report_result?999");xhr.send(); }'),
+    copy('two', lambda original: re.sub(r'function _main\(\$(.+),\$(.+)\) {', r'function _main($\1,$\2) { if (ENVIRONMENT_IS_WEB) { var xhr = new XMLHttpRequest(); xhr.open("GET", "http://localhost:8888/report_result?999");xhr.send(); return; }', original),
                 lambda original: original.replace('function doReftest() {', 'function doReftest() { return; ')) # don't reftest on main thread, it would race
     self.run_browser('two.html?noProxy', None, ['/report_result?999'])
-    copy('two', lambda original: original.replace('function _main($argc,$argv) {', 'function _main($argc,$argv) { if (ENVIRONMENT_IS_WEB) { var xhr = new XMLHttpRequest(); xhr.open("GET", "http://localhost:8888/report_result?999");xhr.send(); }'))
+    copy('two', lambda original: re.sub(r'function _main\(\$(.+),\$(.+)\) {', r'function _main($\1,$\2) { if (ENVIRONMENT_IS_WEB) { var xhr = new XMLHttpRequest(); xhr.open("GET", "http://localhost:8888/report_result?999");xhr.send(); return; }', original))
     self.run_browser('two.html', None, ['/report_result?0']) # this is still cool
 
     # run without noProxy, so proxy, but make worker fail
-    copy('three', lambda original: original.replace('function _main($argc,$argv) {', 'function _main($argc,$argv) { if (ENVIRONMENT_IS_WORKER) { var xhr = new XMLHttpRequest(); xhr.open("GET", "http://localhost:8888/report_result?999");xhr.send(); }'),
+    copy('three', lambda original: re.sub(r'function _main\(\$(.+),\$(.+)\) {', r'function _main($\1,$\2) { if (ENVIRONMENT_IS_WORKER) { var xhr = new XMLHttpRequest(); xhr.open("GET", "http://localhost:8888/report_result?999");xhr.send(); return; }', original),
                 lambda original: original.replace('function doReftest() {', 'function doReftest() { return; ')) # don't reftest on main thread, it would race
     self.run_browser('three.html', None, ['/report_result?999'])
-    copy('three', lambda original: original.replace('function _main($argc,$argv) {', 'function _main($argc,$argv) { if (ENVIRONMENT_IS_WORKER) { var xhr = new XMLHttpRequest(); xhr.open("GET", "http://localhost:8888/report_result?999");xhr.send(); }'))
+    copy('three', lambda original: re.sub(r'function _main\(\$(.+),\$(.+)\) {', r'function _main($\1,$\2) { if (ENVIRONMENT_IS_WORKER) { var xhr = new XMLHttpRequest(); xhr.open("GET", "http://localhost:8888/report_result?999");xhr.send(); return; }', original))
     self.run_browser('three.html?noProxy', None, ['/report_result?0']) # this is still cool
 
   def test_glgears_proxy_jstarget(self):
@@ -686,6 +688,8 @@ window.close = function() {
     self.run_browser('test.html', None, '/report_result?0')
 
   def test_sdl_canvas_alpha(self):
+    # N.B. On Linux with Intel integrated graphics cards, this test needs Firefox 49 or newer.
+    # See https://github.com/kripken/emscripten/issues/4069.
     open(os.path.join(self.get_dir(), 'flag_0.js'), 'w').write('''
       Module['arguments'] = ['-0'];
     ''')
@@ -888,7 +892,7 @@ keydown(100);keyup(100); // trigger the end
     open(os.path.join(self.get_dir(), 'sdl_mouse.c'), 'w').write(self.with_report_result(open(path_from_root('tests', 'sdl_mouse.c')).read()))
 
     Popen([PYTHON, EMCC, os.path.join(self.get_dir(), 'sdl_mouse.c'), '-O2', '--minify', '0', '-o', 'page.html', '--pre-js', 'pre.js']).communicate()
-    self.run_browser('page.html', '', '/report_result?740')
+    self.run_browser('page.html', '', '/report_result?1')
 
   def test_sdl_mouse_offsets(self):
     open(os.path.join(self.get_dir(), 'pre.js'), 'w').write('''
@@ -965,8 +969,8 @@ keydown(100);keyup(100); // trigger the end
     ''')
     open(os.path.join(self.get_dir(), 'sdl_mouse.c'), 'w').write(self.with_report_result(open(path_from_root('tests', 'sdl_mouse.c')).read()))
 
-    Popen([PYTHON, EMCC, os.path.join(self.get_dir(), 'sdl_mouse.c'), '-O2', '--minify', '0', '-o', 'sdl_mouse.js', '--pre-js', 'pre.js']).communicate()
-    self.run_browser('page.html', '', '/report_result?600')
+    Popen([PYTHON, EMCC, os.path.join(self.get_dir(), 'sdl_mouse.c'), '-DTEST_SDL_MOUSE_OFFSETS', '-O2', '--minify', '0', '-o', 'sdl_mouse.js', '--pre-js', 'pre.js']).communicate()
+    self.run_browser('page.html', '', '/report_result?1')
 
   def test_glut_touchevents(self):
     self.btest('glut_touchevents.c', '1')
@@ -2163,6 +2167,7 @@ Module["preRun"].push(function () {
       self.btest(path_from_root('tests', 'webgl_destroy_context.cpp'), args=opts + ['--shell-file', path_from_root('tests/webgl_destroy_context_shell.html'), '-s', 'NO_EXIT_RUNTIME=1'], expected='0', timeout=20)
 
   def test_webgl_context_params(self):
+    if WINDOWS: return self.skip('SKIPPED due to bug https://bugzilla.mozilla.org/show_bug.cgi?id=1310005 - WebGL implementation advertises implementation defined GL_IMPLEMENTATION_COLOR_READ_TYPE/FORMAT pair that it cannot read with')
     self.btest(path_from_root('tests', 'webgl_color_buffer_readpixels.cpp'), expected='0', timeout=20)
 
   def test_webgl2(self):
@@ -2292,8 +2297,8 @@ open(filename, 'w').write(replaced)
 
     # verify that the mem init request succeeded in the latter case
     open('src.cpp', 'w').write(self.with_report_result(r'''
-#include<stdio.h>
-#include<emscripten.h>
+#include <stdio.h>
+#include <emscripten.h>
 
 int main() {
   int result = EM_ASM_INT_V({
@@ -2478,7 +2483,7 @@ Module['_main'] = function() {
     open(os.path.join(self.get_dir(), 'sdl2_mouse.c'), 'w').write(self.with_report_result(open(path_from_root('tests', 'sdl2_mouse.c')).read()))
 
     Popen([PYTHON, EMCC, os.path.join(self.get_dir(), 'sdl2_mouse.c'), '-O2', '--minify', '0', '-o', 'page.html', '--pre-js', 'pre.js', '-s', 'USE_SDL=2']).communicate()
-    self.run_browser('page.html', '', '/report_result?712', timeout=30)
+    self.run_browser('page.html', '', '/report_result?1', timeout=30)
 
   def test_sdl2_mouse_offsets(self):
     open(os.path.join(self.get_dir(), 'pre.js'), 'w').write('''
@@ -2555,8 +2560,8 @@ Module['_main'] = function() {
     ''')
     open(os.path.join(self.get_dir(), 'sdl2_mouse.c'), 'w').write(self.with_report_result(open(path_from_root('tests', 'sdl2_mouse.c')).read()))
 
-    Popen([PYTHON, EMCC, os.path.join(self.get_dir(), 'sdl2_mouse.c'), '-O2', '--minify', '0', '-o', 'sdl2_mouse.js', '--pre-js', 'pre.js', '-s', 'USE_SDL=2']).communicate()
-    self.run_browser('page.html', '', '/report_result?572')
+    Popen([PYTHON, EMCC, os.path.join(self.get_dir(), 'sdl2_mouse.c'), '-DTEST_SDL_MOUSE_OFFSETS=1', '-O2', '--minify', '0', '-o', 'sdl2_mouse.js', '--pre-js', 'pre.js', '-s', 'USE_SDL=2']).communicate()
+    self.run_browser('page.html', '', '/report_result?1')
 
   def test_sdl2glshader(self):
     self.btest('sdl2glshader.c', reference='sdlglshader.png', args=['-s', 'USE_SDL=2', '-O2', '--closure', '1', '-s', 'LEGACY_GL_EMULATION=1'])
@@ -2754,11 +2759,12 @@ window.close = function() {
     self.btest('emterpreter_async_iostream.cpp', '1', args=['-s', 'EMTERPRETIFY=1', '-s', 'EMTERPRETIFY_ASYNC=1'])
 
   def test_modularize(self):
-    for opts in [[], ['-O1'], ['-O2', '-profiling'], ['-O2']]:
+    for opts in [[], ['-O1'], ['-O2', '-profiling'], ['-O2'], ['-O2', '--closure', '1']]:
       for args, code in [
         ([], 'Module();'), # defaults
         (['-s', 'EXPORT_NAME="HelloWorld"'], '''
           if (typeof Module !== "undefined") throw "what?!"; // do not pollute the global scope, we are modularized!
+          HelloWorld.noInitialRun = true; // errorneous module capture will load this and cause timeout
           HelloWorld();
         '''), # use EXPORT_NAME
         (['-s', 'EXPORT_NAME="HelloWorld"'], '''
@@ -2782,6 +2788,41 @@ window.close = function() {
           </script>
         ''' % code)
         self.run_browser('a.html', '...', '/report_result?0')
+
+  # test illustrating the regression on the modularize feature since commit c5af8f6
+  # when compiling with the --preload-file option
+  def test_modularize_and_preload_files(self):
+    # amount of memory different from the default one that will be allocated for the emscripten heap
+    totalMemory = 33554432
+    for opts in [[], ['-O1'], ['-O2', '-profiling'], ['-O2'], ['-O2', '--closure', '1']]:
+      # the main function simply checks that the amount of allocated heap memory is correct
+      src = r'''
+        #include <stdio.h>
+        #include <emscripten.h>
+        int main() {
+          EM_ASM({
+            // use eval here in order for the test with closure compiler enabled to succeed
+            var totalMemory = eval('Module.TOTAL_MEMORY');
+            assert(totalMemory === %d, 'bad memory size');
+          });
+          int result = 0;
+          REPORT_RESULT();
+          return 0;
+        }
+      ''' % totalMemory
+      open('test.c', 'w').write(self.with_report_result(src))
+      # generate a dummy file
+      open('dummy_file', 'w').write('dummy')
+      # compile the code with the modularize feature and the preload-file option enabled
+      Popen([PYTHON, EMCC, 'test.c', '-s', 'MODULARIZE=1', '-s', 'EXPORT_NAME="Foo"', '--preload-file', 'dummy_file'] + opts).communicate()
+      open('a.html', 'w').write('''
+        <script src="a.out.js"></script>
+        <script>
+          // instantiate the Foo module with custom TOTAL_MEMORY value
+          var foo = Foo({ TOTAL_MEMORY: %d });
+        </script>
+      ''' % totalMemory)
+      self.run_browser('a.html', '...', '/report_result?0')
 
   def test_webidl(self):
     # see original in test_core.py
@@ -3240,3 +3281,8 @@ window.close = function() {
   def test_webgl_offscreen_canvas_in_mainthread_after_pthread(self):
     for args in [[], ['-DTEST_MAIN_THREAD_EXPLICIT_COMMIT']]:
       self.btest('gl_in_mainthread_after_pthread.cpp', expected='0', args=args+['-s', 'USE_PTHREADS=1', '-s', 'PTHREAD_POOL_SIZE=2', '-s', 'OFFSCREENCANVAS_SUPPORT=1'])
+
+  # Tests the feature that shell html page can preallocate the typed array and place it to Module.buffer before loading the script page.
+  # In this build mode, the -s TOTAL_MEMORY=xxx option will be ignored.
+  def test_preallocated_heap(self):
+    self.btest('test_preallocated_heap.cpp', expected='1', args=['-s', 'TOTAL_MEMORY='+str(16*1024*1024), '-s', 'ABORTING_MALLOC=0', '--shell-file', path_from_root('tests', 'test_preallocated_heap_shell.html')])

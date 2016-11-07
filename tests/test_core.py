@@ -248,7 +248,7 @@ class T(RunnerCore): # Short name, to make it more fun to use manually on the co
   def test_unaligned(self):
       return self.skip('LLVM marks the reads of s as fully aligned, making this test invalid')
       src = r'''
-        #include<stdio.h>
+        #include <stdio.h>
 
         struct S {
           double x;
@@ -606,7 +606,6 @@ int main()
     self.do_run_in_out_file_test('tests', 'core', 'test_stack')
 
   def test_stack_align(self):
-    Settings.INLINING_LIMIT = 50
     src = path_from_root('tests', 'core', 'test_stack_align.cpp')
     def test():
       self.do_run(open(src).read(), ['''align 4: 0
@@ -1752,7 +1751,6 @@ int main() {
 
   @no_emterpreter
   def test_bigswitch(self):
-    self.banned_js_engines = [SPIDERMONKEY_ENGINE] # bug 1174230
     src = open(path_from_root('tests', 'bigswitch.cpp')).read()
     self.do_run(src, '''34962: GL_ARRAY_BUFFER (0x8892)
 26214: what?
@@ -1762,7 +1760,6 @@ int main() {
 
   @no_emterpreter
   def test_biggerswitch(self):
-    self.banned_js_engines = [SPIDERMONKEY_ENGINE] # bug 1174230
     num_cases = 20000
     switch_case, err = Popen([PYTHON, path_from_root('tests', 'gen_large_switchcase.py'), str(num_cases)], stdout=PIPE, stderr=PIPE).communicate()
     self.do_run(switch_case, '''58996: 589965899658996
@@ -5627,7 +5624,7 @@ def process(filename):
     emcc_args = self.emcc_args
 
     # The following tests link to libc, and must be run with EMCC_LEAVE_INPUTS_RAW = 0
-    need_no_leave_inputs_raw = ['muli33_ta2', 'philoop_ta2', 'uadd_overflow_64_ta2', 'i64toi8star', 'legalizer_ta2', 'quotedlabel', 'alignedunaligned', 'sillybitcast', 'invokeundef', 'loadbitcastgep', 'sillybitcast2', 'legalizer_b_ta2', 'emptystruct', 'entry3', 'atomicrmw_i64', 'atomicrmw_b_i64']
+    need_no_leave_inputs_raw = ['muli33_ta2', 'philoop_ta2', 'uadd_overflow_64_ta2', 'i64toi8star', 'legalizer_ta2', 'quotedlabel', 'alignedunaligned', 'sillybitcast', 'invokeundef', 'loadbitcastgep', 'sillybitcast2', 'legalizer_b_ta2', 'emptystruct', 'entry3', 'atomicrmw_i64', 'atomicrmw_b_i64', 'invoke_byval', 'i24_ce_fastcomp']
 
     try:
       import random
@@ -5738,8 +5735,6 @@ def process(filename):
     Building.llvm_as(filename)
     Building.llvm_dis(filename)
 
-  # Broken on V8 but not node
-  @no_wasm_backend()
   def test_autodebug(self):
     if Building.LLVM_OPTS: return self.skip('LLVM opts mess us up')
     Building.COMPILER_TEST_OPTS += ['--llvm-opts', '0']
@@ -5754,7 +5749,6 @@ def process(filename):
 
     # Compare to each other, and to expected output
     self.do_ll_run(path_from_root('tests', filename+'.o.ll.ll'), '''AD:-1,1''')
-    assert open('stdout').read().startswith('AD:-1'), 'We must note when we enter functions'
 
     # Test using build_ll_hook
     src = '''
@@ -6210,8 +6204,8 @@ def process(filename):
     Building.COMPILER_TEST_OPTS += ['--bind']
 
     src = r'''
-      #include<stdio.h>
-      #include<emscripten/val.h>
+      #include <stdio.h>
+      #include <emscripten/val.h>
 
       using namespace emscripten;
 
@@ -6627,8 +6621,8 @@ Module.printErr = Module['printErr'] = function(){};
     if Building.LLVM_OPTS: return self.skip('LLVM can optimize away the intermediate |x|')
 
     src = '''
-      #include<stdio.h>
-      #include<stdlib.h>
+      #include <stdio.h>
+      #include <stdlib.h>
       int main() { int *x = (int*)malloc(sizeof(int));
         *x = 20;
         float *y = (float*)x;
@@ -6649,8 +6643,8 @@ Module.printErr = Module['printErr'] = function(){};
     # Linking multiple files should work too
 
     module = '''
-      #include<stdio.h>
-      #include<stdlib.h>
+      #include <stdio.h>
+      #include <stdlib.h>
       void callFunc() { int *x = (int*)malloc(sizeof(int));
         *x = 20;
         float *y = (float*)x;
@@ -6661,8 +6655,8 @@ Module.printErr = Module['printErr'] = function(){};
     open(module_name, 'w').write(module)
 
     main = '''
-      #include<stdio.h>
-      #include<stdlib.h>
+      #include <stdio.h>
+      #include <stdlib.h>
       extern void callFunc();
       int main() { callFunc();
         int *x = (int*)malloc(sizeof(int));
@@ -7178,6 +7172,14 @@ int main(int argc, char **argv) {
     self.emcc_args += ['-DTEST_BRK=1']
     self.do_run(open(path_from_root('tests', 'sbrk_brk.cpp')).read(), 'OK.')
 
+  # Tests that we can use the dlmalloc mallinfo() function to obtain information about malloc()ed blocks and compute how much memory is used/freed.
+  @no_wasm_backend('requires EM_ASM args support in wasm backend')
+  def test_mallinfo(self):
+    self.do_run(open(path_from_root('tests', 'mallinfo.cpp')).read(), 'OK.')
+
+  def test_wrap_malloc(self):
+    self.do_run(open(path_from_root('tests', 'wrap_malloc.cpp')).read(), 'OK.')
+
 # Generate tests for everything
 def make_run(fullname, name=-1, compiler=-1, embetter=0, quantum_size=0,
     typed_arrays=0, emcc_args=None, env=None):
@@ -7247,16 +7249,16 @@ asm2g = make_run("asm2g", compiler=CLANG, emcc_args=["-O2", "-g", "-s", "ASSERTI
 asm2i = make_run("asm2i", compiler=CLANG, emcc_args=["-O2", '-s', 'EMTERPRETIFY=1'])
 #asm2m = make_run("asm2m", compiler=CLANG, emcc_args=["-O2", "--memory-init-file", "0", "-s", "MEM_INIT_METHOD=2", "-s", "ASSERTIONS=1"])
 
-binaryen0 = make_run("binaryen0", compiler=CLANG, emcc_args=['-O0', '-s', 'BINARYEN=1', '-s', 'BINARYEN_METHOD="interpret-binary"'])
-binaryen1 = make_run("binaryen1", compiler=CLANG, emcc_args=['-O1', '-s', 'BINARYEN=1', '-s', 'BINARYEN_METHOD="interpret-binary"'])
-binaryen2 = make_run("binaryen2", compiler=CLANG, emcc_args=['-O2', '-s', 'BINARYEN=1', '-s', 'BINARYEN_METHOD="interpret-binary"'])
-binaryen3 = make_run("binaryen3", compiler=CLANG, emcc_args=['-O3', '-s', 'BINARYEN=1', '-s', 'BINARYEN_METHOD="interpret-binary"', '-s', 'ASSERTIONS=1', "-s", "PRECISE_F32=1"])
+binaryen0 = make_run("binaryen0", compiler=CLANG, emcc_args=['-O0', '-s', 'BINARYEN=1', '-s', 'BINARYEN_METHOD="native-wasm"'])
+binaryen1 = make_run("binaryen1", compiler=CLANG, emcc_args=['-O1', '-s', 'BINARYEN=1', '-s', 'BINARYEN_METHOD="native-wasm"'])
+binaryen2 = make_run("binaryen2", compiler=CLANG, emcc_args=['-O2', '-s', 'BINARYEN=1', '-s', 'BINARYEN_METHOD="native-wasm"'])
+binaryen3 = make_run("binaryen3", compiler=CLANG, emcc_args=['-O3', '-s', 'BINARYEN=1', '-s', 'BINARYEN_METHOD="native-wasm"', '-s', 'ASSERTIONS=1', "-s", "PRECISE_F32=1"])
 
-binaryen2jo = make_run("binaryen2jo", compiler=CLANG, emcc_args=['-O2', '-s', 'BINARYEN=1', '-s', 'BINARYEN_METHOD="interpret-binary,asmjs"'])
-binaryen3jo = make_run("binaryen3jo", compiler=CLANG, emcc_args=['-O3', '-s', 'BINARYEN=1', '-s', 'BINARYEN_METHOD="interpret-binary,asmjs"'])
+binaryen2jo = make_run("binaryen2jo", compiler=CLANG, emcc_args=['-O2', '-s', 'BINARYEN=1', '-s', 'BINARYEN_METHOD="native-wasm,asmjs"'])
+binaryen3jo = make_run("binaryen3jo", compiler=CLANG, emcc_args=['-O3', '-s', 'BINARYEN=1', '-s', 'BINARYEN_METHOD="native-wasm,asmjs"'])
 
-# This only works when .emscripten specifies a JS_ENGINE with native wasm support.
-binaryen_native = make_run("binaryen_native", compiler=CLANG, emcc_args=['-O2', '-s', 'BINARYEN=1', '-s', 'BINARYEN_METHOD="native-wasm"'])
+# This tests the binaryen interpreter and its polyfill integration in the emscripten JS glue
+binaryen2_interpret = make_run("binaryen2_interpret", compiler=CLANG, emcc_args=['-O2', '-s', 'BINARYEN=1', '-s', 'BINARYEN_METHOD="interpret-binary"'])
 
 
 #normalyen = make_run("normalyen", compiler=CLANG, emcc_args=['-O0', '-s', 'GLOBAL_BASE=1024']) # useful comparison to binaryen

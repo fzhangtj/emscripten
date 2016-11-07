@@ -285,7 +285,7 @@ var LibraryBrowser = {
           }
         }
 #if GL_TESTING
-        contextAttributes.preserveDrawingBuffer = true;
+        contextAttributes['preserveDrawingBuffer'] = true;
 #endif
 
         contextHandle = GL.createContext(canvas, contextAttributes);
@@ -628,10 +628,11 @@ var LibraryBrowser = {
     },
 
     asyncLoad: function(url, onload, onerror, noRunDep) {
+      var dep = !noRunDep ? getUniqueRunDependency('al ' + url) : '';
       Module['readAsync'](url, function(arrayBuffer) {
         assert(arrayBuffer, 'Loading data file "' + url + '" failed (no arrayBuffer).');
         onload(new Uint8Array(arrayBuffer));
-        if (!noRunDep) removeRunDependency('al ' + url);
+        if (dep) removeRunDependency(dep);
       }, function(event) {
         if (onerror) {
           onerror();
@@ -639,7 +640,7 @@ var LibraryBrowser = {
           throw 'Loading data file "' + url + '" failed.';
         }
       });
-      if (!noRunDep) addRunDependency('al ' + url);
+      if (dep) addRunDependency(dep);
     },
 
     resizeListeners: [],
@@ -740,14 +741,22 @@ var LibraryBrowser = {
   emscripten_wget: function(url, file) {
     var _url = Pointer_stringify(url);
     var _file = Pointer_stringify(file);
+    _file = PATH.resolve(FS.cwd(), _file);
     asm.setAsync();
     Module['noExitRuntime'] = true;
+    var destinationDirectory = PATH.dirname(_file);
     FS.createPreloadedFile(
-      PATH.dirname(_file),
+      destinationDirectory,
       PATH.basename(_file),
       _url, true, true,
       _emscripten_async_resume,
-      _emscripten_async_resume
+      _emscripten_async_resume,
+      undefined, // dontCreateFile
+      undefined, // canOwn
+      function() { // preFinish
+        // if the destination directory does not yet exist, create it
+        FS.mkdirTree(destinationDirectory);
+      }
     );
   },
 #else
@@ -762,6 +771,7 @@ var LibraryBrowser = {
 
     var _url = Pointer_stringify(url);
     var _file = Pointer_stringify(file);
+    _file = PATH.resolve(FS.cwd(), _file);
     function doCallback(callback) {
       if (callback) {
         var stack = Runtime.stackSave();
@@ -769,8 +779,9 @@ var LibraryBrowser = {
         Runtime.stackRestore(stack);
       }
     }
+    var destinationDirectory = PATH.dirname(_file);
     FS.createPreloadedFile(
-      PATH.dirname(_file),
+      destinationDirectory,
       PATH.basename(_file),
       _url, true, true,
       function() {
@@ -786,6 +797,8 @@ var LibraryBrowser = {
         try {
           FS.unlink(_file);
         } catch (e) {}
+        // if the destination directory does not yet exist, create it
+        FS.mkdirTree(destinationDirectory);
       }
     );
   },
@@ -831,6 +844,7 @@ var LibraryBrowser = {
 
     var _url = Pointer_stringify(url);
     var _file = Pointer_stringify(file);
+    _file = PATH.resolve(FS.cwd(), _file);
     var _request = Pointer_stringify(request);
     var _param = Pointer_stringify(param);
     var index = _file.lastIndexOf('/');
@@ -841,6 +855,8 @@ var LibraryBrowser = {
 
     var handle = Browser.getNextWgetRequestHandle();
 
+    var destinationDirectory = PATH.dirname(_file);
+
     // LOAD
     http.onload = function http_onload(e) {
       if (http.status == 200) {
@@ -848,6 +864,9 @@ var LibraryBrowser = {
         try {
           FS.unlink(_file);
         } catch (e) {}
+        // if the destination directory does not yet exist, create it
+        FS.mkdirTree(destinationDirectory);
+
         FS.createDataFile( _file.substr(0, index), _file.substr(index + 1), new Uint8Array(http.response), true, true, false);
         if (onload) {
           var stack = Runtime.stackSave();

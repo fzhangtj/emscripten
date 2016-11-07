@@ -87,11 +87,15 @@ def emscript(infile, settings, outfile, libraries=None, compiler_engine=None,
     # these functions are split up to force variables to go out of scope and allow
     # memory to be reclaimed
 
-    funcs, metadata, mem_init = get_and_parse_backend(infile, settings, temp_files, DEBUG)
-    glue, forwarded_data = compiler_glue(metadata, settings, libraries, compiler_engine, temp_files, DEBUG)
+    with ToolchainProfiler.profile_block('get_and_parse_backend'):
+      funcs, metadata, mem_init = get_and_parse_backend(infile, settings, temp_files, DEBUG)
+    with ToolchainProfiler.profile_block('compiler_glue'):
+      glue, forwarded_data = compiler_glue(metadata, settings, libraries, compiler_engine, temp_files, DEBUG)
 
-    post, funcs_js, need_asyncify, provide_fround, asm_safe_heap, sending, receiving, asm_setup, the_global, asm_global_vars, asm_global_funcs, pre_tables, final_function_tables, exports, last_forwarded_json = function_tables_and_exports(funcs, metadata, mem_init, glue, forwarded_data, settings, outfile, DEBUG)
-    finalize_output(metadata, post, funcs_js, need_asyncify, provide_fround, asm_safe_heap, sending, receiving, asm_setup, the_global, asm_global_vars, asm_global_funcs, pre_tables, final_function_tables, exports, last_forwarded_json, settings, outfile, DEBUG)
+    with ToolchainProfiler.profile_block('function_tables_and_exports'):
+      post, funcs_js, need_asyncify, provide_fround, asm_safe_heap, sending, receiving, asm_setup, the_global, asm_global_vars, asm_global_funcs, pre_tables, final_function_tables, exports, last_forwarded_json = function_tables_and_exports(funcs, metadata, mem_init, glue, forwarded_data, settings, outfile, DEBUG)
+    with ToolchainProfiler.profile_block('finalize_output'):
+      finalize_output(metadata, post, funcs_js, need_asyncify, provide_fround, asm_safe_heap, sending, receiving, asm_setup, the_global, asm_global_vars, asm_global_funcs, pre_tables, final_function_tables, exports, last_forwarded_json, settings, outfile, DEBUG)
 
     success = True
 
@@ -144,7 +148,8 @@ def get_and_parse_backend(infile, settings, temp_files, DEBUG):
       if DEBUG:
         logging.debug('emscript: llvm backend: ' + ' '.join(backend_args))
         t = time.time()
-      shared.jsrun.timeout_run(subprocess.Popen(backend_args, stdout=subprocess.PIPE))
+      with ToolchainProfiler.profile_block('emscript_llvm_backend'):
+        shared.jsrun.timeout_run(subprocess.Popen(backend_args, stdout=subprocess.PIPE))
       if DEBUG:
         logging.debug('  emscript: llvm backend took %s seconds' % (time.time() - t))
 
@@ -569,7 +574,7 @@ function _emscripten_asm_const_%s(%s) {
                          'equal', 'lessThan', 'greaterThan',
                          'notEqual', 'lessThanOrEqual', 'greaterThanOrEqual',
                          'select', 'swizzle', 'shuffle',
-                         'load', 'store', 'load1', 'store1', 'load2', 'store2', 'load3', 'store3']
+                         'load', 'store', 'load1', 'store1', 'load2', 'store2']
     simdintboolfuncs = ['and', 'xor', 'or', 'not']
     if metadata['simdUint8x16']:
       simdinttypes += ['Uint8x16']
@@ -690,6 +695,9 @@ function _emscripten_asm_const_%s(%s) {
     else:
       basic_funcs += ['setTempRet0', 'getTempRet0']
       asm_setup += 'var setTempRet0 = Runtime.setTempRet0, getTempRet0 = Runtime.getTempRet0;\n'
+
+    if settings['BINARYEN']:
+      asm_setup += "\nModule['wasmTableSize'] = %d;\n" % sum(map(lambda table: table.count(',') + 1, last_forwarded_json['Functions']['tables'].values()))
 
     # See if we need ASYNCIFY functions
     # We might not need them even if ASYNCIFY is enabled
@@ -822,7 +830,7 @@ function ftCall_%s(%s) {%s
         return False
       nonexisting_simd_symbols = ['Int8x16_fromInt8x16', 'Uint8x16_fromUint8x16', 'Int16x8_fromInt16x8', 'Uint16x8_fromUint16x8', 'Int32x4_fromInt32x4', 'Uint32x4_fromUint32x4', 'Float32x4_fromFloat32x4', 'Float64x2_fromFloat64x2']
       nonexisting_simd_symbols += ['Int32x4_addSaturate', 'Int32x4_subSaturate', 'Uint32x4_addSaturate', 'Uint32x4_subSaturate']
-      nonexisting_simd_symbols += [(x + '_' + y) for x in ['Int8x16', 'Uint8x16', 'Int16x8', 'Uint16x8', 'Float64x2'] for y in ['load2', 'load3', 'store2', 'store3']]
+      nonexisting_simd_symbols += [(x + '_' + y) for x in ['Int8x16', 'Uint8x16', 'Int16x8', 'Uint16x8', 'Float64x2'] for y in ['load2', 'store2']]
       nonexisting_simd_symbols += [(x + '_' + y) for x in ['Int8x16', 'Uint8x16', 'Int16x8', 'Uint16x8'] for y in ['load1', 'store1']]
 
       asm_global_funcs += ''.join(['  var SIMD_' + ty + '=global' + access_quote('SIMD') + access_quote(ty) + ';\n' for ty in simdtypes])
@@ -844,9 +852,13 @@ function ftCall_%s(%s) {%s
         return '  var SIMD_' + dst + '_from' + src + '=SIMD_' + dst + '.from' + src + ';\n'
       def add_simd_casts(t1, t2):
         return add_simd_cast(t1, t2) + add_simd_cast(t2, t1)
-      if metadata['simdInt8x16'] and metadata['simdUint8x16']: asm_global_funcs += add_simd_casts('Int8x16', 'Uint8x16')
-      if metadata['simdInt16x8'] and metadata['simdUint16x8']: asm_global_funcs += add_simd_casts('Int16x8', 'Uint16x8')
-      if metadata['simdInt32x4'] and metadata['simdUint32x4']: asm_global_funcs += add_simd_casts('Int32x4', 'Uint32x4')
+
+      # Bug: Skip importing conversions for int<->uint for now, they don't validate as asm.js. https://bugzilla.mozilla.org/show_bug.cgi?id=1313512
+      # This is not an issue when building SSEx code, because it doesn't use these. (but it will be an issue if using SIMD.js intrinsics from vector.h to explicitly call these)
+#      if metadata['simdInt8x16'] and metadata['simdUint8x16']: asm_global_funcs += add_simd_casts('Int8x16', 'Uint8x16')
+#      if metadata['simdInt16x8'] and metadata['simdUint16x8']: asm_global_funcs += add_simd_casts('Int16x8', 'Uint16x8')
+#      if metadata['simdInt32x4'] and metadata['simdUint32x4']: asm_global_funcs += add_simd_casts('Int32x4', 'Uint32x4')
+
       if metadata['simdInt32x4'] and metadata['simdFloat32x4']: asm_global_funcs += add_simd_casts('Int32x4', 'Float32x4')
       if metadata['simdUint32x4'] and metadata['simdFloat32x4']: asm_global_funcs += add_simd_casts('Uint32x4', 'Float32x4')
       if metadata['simdInt32x4'] and metadata['simdFloat64x2']: asm_global_funcs += add_simd_cast('Int32x4', 'Float64x2') # Unofficial, needed for emscripten_int32x4_fromFloat64x2
@@ -1409,6 +1421,10 @@ def emscript_wasm_backend(infile, settings, outfile, libraries=None, compiler_en
       # Don't include Invoke wrapper names (for asm.js-style exception handling)
       # in metadata[declares], the invoke wrappers will be generated in
       # this script later.
+      import_type = parts[3][1:]
+      if import_type == 'memory':
+        continue
+      assert import_type == 'func', 'No support for imports other than functions and memories'
       func_name = parts[2][1:-1]
       if not func_name.startswith('invoke_'):
         metadata['declares'].append(func_name)

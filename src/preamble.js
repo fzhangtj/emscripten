@@ -110,7 +110,7 @@ function ftfault() {
 // Runtime essentials
 //========================================
 
-var ABORT = false; // whether we are quitting the application. no code should run after this. set in exit() and abort()
+var ABORT = 0; // whether we are quitting the application. no code should run after this. set in exit() and abort()
 var EXITSTATUS = 0;
 
 function assert(condition, text) {
@@ -1181,8 +1181,8 @@ if (typeof Atomics === 'undefined') {
   Atomics['and'] = function(t, i, v) { var w = t[i]; t[i] &= v; return w; }
   Atomics['compareExchange'] = function(t, i, e, r) { var w = t[i]; if (w == e) t[i] = r; return w; }
   Atomics['wait'] = function(t, i, v, o) { if (t[i] != v) abort('Multithreading is not supported, cannot sleep to wait for futex!'); }
-  Atomics['wake'] = function(t, i, c) {}
-  Atomics['wakeOrRequeue'] = function(t, i1, c, i2, v) {}
+  Atomics['wake'] = function(t, i, c) { return 0; }
+  Atomics['wakeOrRequeue'] = function(t, i1, c, i2, v) { return 0; }
   Atomics['isLockFree'] = function(s) { return true; }
   Atomics['load'] = function(t, i) { return t[i]; }
   Atomics['or'] = function(t, i, v) { var w = t[i]; t[i] |= v; return w; }
@@ -1803,6 +1803,7 @@ var Math_floor = Math.floor;
 var Math_pow = Math.pow;
 var Math_imul = Math.imul;
 var Math_fround = Math.fround;
+var Math_round = Math.round;
 var Math_min = Math.min;
 var Math_clz32 = Math.clz32;
 var Math_trunc = Math.trunc;

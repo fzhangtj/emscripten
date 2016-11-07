@@ -449,7 +449,7 @@ LibraryManager.library = {
     // Perform a compare-and-swap loop to update the new dynamic top value. This is because
     // this function can becalled simultaneously in multiple threads.
     do {
-      oldDynamicTop = Atomics_load(HEAP32, DYNAMICTOP_PTR>>2);
+      oldDynamicTop = Atomics_load(HEAP32, DYNAMICTOP_PTR>>2)|0;
       newDynamicTop = oldDynamicTop + increment | 0;
       // Asking to increase dynamic top to a too high value? In pthreads builds we cannot
       // enlarge memory, so this needs to fail.
@@ -465,7 +465,7 @@ LibraryManager.library = {
       }
       // Attempt to update the dynamic top to new value. Another thread may have beat this thread to the update,
       // in which case we will need to start over by iterating the loop body again.
-      oldDynamicTopOnChange = Atomics_compareExchange(HEAP32, DYNAMICTOP_PTR>>2, oldDynamicTop|0, newDynamicTop|0);
+      oldDynamicTopOnChange = Atomics_compareExchange(HEAP32, DYNAMICTOP_PTR>>2, oldDynamicTop|0, newDynamicTop|0)|0;
     } while((oldDynamicTopOnChange|0) != (oldDynamicTop|0));
 #else // singlethreaded build: (-s USE_PTHREADS=0)
     oldDynamicTop = HEAP32[DYNAMICTOP_PTR>>2]|0;
@@ -511,7 +511,7 @@ LibraryManager.library = {
       return -1;
 #endif
     }
-    Atomics_store(HEAP32, DYNAMICTOP_PTR>>2, newDynamicTop|0);
+    Atomics_store(HEAP32, DYNAMICTOP_PTR>>2, newDynamicTop|0)|0;
 #else // singlethreaded build: (-s USE_PTHREADS=0)
     if ((newDynamicTop|0) < 0) {
 #if ABORTING_MALLOC
@@ -1086,7 +1086,10 @@ LibraryManager.library = {
       var info = EXCEPTIONS.infos[ptr];
       assert(info.refcount > 0);
       info.refcount--;
-      if (info.refcount === 0) {
+      // A rethrown exception can reach refcount 0; it must not be discarded
+      // Its next handler will clear the rethrown flag and addRef it, prior to
+      // final decRef and destruction here
+      if (info.refcount === 0 && !info.rethrown) {
         if (info.destructor) {
 #if WASM_BACKEND == 0
           Runtime.dynCall('vi', info.destructor, [ptr]);
@@ -1146,7 +1149,8 @@ LibraryManager.library = {
       type: type,
       destructor: destructor,
       refcount: 0,
-      caught: false
+      caught: false,
+      rethrown: false
     };
     EXCEPTIONS.last = ptr;
     if (!("uncaught_exception" in __ZSt18uncaught_exceptionv)) {
@@ -1161,8 +1165,12 @@ LibraryManager.library = {
   // pop that here from the caught exceptions.
   __cxa_rethrow__deps: ['__cxa_end_catch', '$EXCEPTIONS'],
   __cxa_rethrow: function() {
-    ___cxa_end_catch.rethrown = true;
     var ptr = EXCEPTIONS.caught.pop();
+    if (!EXCEPTIONS.infos[ptr].rethrown) {
+      // Only pop if the corresponding push was through rethrow_primary_exception
+      EXCEPTIONS.caught.push(ptr)
+      EXCEPTIONS.infos[ptr].rethrown = true;
+    }
 #if EXCEPTION_DEBUG
     Module.printErr('Compiled code RE-throwing an exception, popped ' + [ptr, EXCEPTIONS.last, 'stack', EXCEPTIONS.caught]);
 #endif
@@ -1192,6 +1200,7 @@ LibraryManager.library = {
       info.caught = true;
       __ZSt18uncaught_exceptionv.uncaught_exception--;
     }
+    if (info) info.rethrown = false;
     EXCEPTIONS.caught.push(ptr);
 #if EXCEPTION_DEBUG
 		Module.printErr('cxa_begin_catch ' + [ptr, 'stack', EXCEPTIONS.caught]);
@@ -1205,10 +1214,6 @@ LibraryManager.library = {
   // an invalid index into the FUNCTION_TABLE, so something has gone wrong.
   __cxa_end_catch__deps: ['__cxa_free_exception', '$EXCEPTIONS'],
   __cxa_end_catch: function() {
-    if (___cxa_end_catch.rethrown) {
-      ___cxa_end_catch.rethrown = false;
-      return;
-    }
     // Clear state flag.
     asm['setThrew'](0);
     // Call destructor if one is registered then clear it.
@@ -1252,6 +1257,7 @@ LibraryManager.library = {
   __cxa_rethrow_primary_exception: function(ptr) {
     if (!ptr) return;
     EXCEPTIONS.caught.push(ptr);
+    EXCEPTIONS.infos[ptr].rethrown = true;
     ___cxa_rethrow();
   },
 
@@ -1324,7 +1330,6 @@ LibraryManager.library = {
     Module.print("Resuming exception " + [ptr, EXCEPTIONS.last]);
 #endif
     if (!EXCEPTIONS.last) { EXCEPTIONS.last = ptr; }
-    EXCEPTIONS.clearRef(EXCEPTIONS.deAdjust(ptr)); // exception refcount should be cleared, but don't free it
     {{{ makeThrow('ptr') }}}
   },
 
@@ -1477,6 +1482,8 @@ LibraryManager.library = {
   llvm_trunc_f64: 'Math_trunc',
   llvm_floor_f32: 'Math_floor',
   llvm_floor_f64: 'Math_floor',
+  llvm_round_f32: 'Math_round',
+  llvm_round_f64: 'Math_round',
 
   llvm_exp2_f32: function(x) {
     return Math.pow(2, x);
@@ -1547,7 +1554,32 @@ LibraryManager.library = {
 #endif
     // void *dlopen(const char *file, int mode);
     // http://pubs.opengroup.org/onlinepubs/009695399/functions/dlopen.html
-    filename = filename === 0 ? '__self__' : (ENV['LD_LIBRARY_PATH'] || '/') + Pointer_stringify(filename);
+    var searchpaths = [];
+    if (filename === 0) {
+      filename = '__self__';
+    } else {
+      var strfilename = Pointer_stringify(filename);
+      var isValidFile = function (filename) {
+        var target = FS.findObject(filename);
+        return target && !target.isFolder && !target.isDevice;
+      };
+
+      if (isValidFile(strfilename)) {
+        filename = strfilename;
+      } else {
+        if (ENV['LD_LIBRARY_PATH']) {
+          searchpaths = ENV['LD_LIBRARY_PATH'].split(':');
+        }
+
+        for (var ident in searchpaths) {
+          var searchfile = PATH.join2(searchpaths[ident],strfilename);
+          if (isValidFile(searchfile)) {
+            filename = searchfile;
+            break;
+          }
+        }
+      }
+    }
 
     if (DLFCN.loadedLibNames[filename]) {
       // Already loaded; increment ref count and return.
@@ -1593,7 +1625,22 @@ LibraryManager.library = {
       if (flag & 256) { // RTLD_GLOBAL
         for (var ident in lib_module) {
           if (lib_module.hasOwnProperty(ident)) {
-            Module[ident] = lib_module[ident];
+            // When RTLD_GLOBAL is enable, the symbols defined by this shared object will be made
+            // available for symbol resolution of subsequently loaded shared objects.
+            //
+            // We should copy the symbols (which include methods and variables) from SIDE_MODULE to MAIN_MODULE.
+            //
+            // Module of SIDE_MODULE has not only the symbols (which should be copied)
+            // but also others (print*, asmGlobal*, FUNCTION_TABLE_**, NAMED_GLOBALS, and so on).
+            //
+            // When the symbol (which should be copied) is method, Module._* 's type becomes function.
+            // When the symbol (which should be copied) is variable, Module._* 's type becomes number.
+            //
+            // Except for the symbol prefix (_), there is no difference in the symbols (which should be copied) and others.
+            // So this just copies over compiled symbols (which start with _).
+            if (ident[0] == '_') {
+              Module[ident] = lib_module[ident];
+            }
           }
         }
       }
@@ -4130,7 +4177,7 @@ LibraryManager.library = {
     var trace = _emscripten_get_callstack_js();
     var parts = trace.split('\n');
     for (var i = 0; i < parts.length; i++) {
-      var ret = Module.dynCall('iii', [0, arg]);
+      var ret = Runtime.dynCall('iii', [0, arg]);
       if (ret !== 0) return;
     }
   },

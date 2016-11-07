@@ -605,6 +605,17 @@ class RunnerCore(unittest.TestCase):
     '''
     return (main, supp)
 
+  def filtered_js_engines(self, js_engines=None):
+    if js_engines is None:
+      js_engines = JS_ENGINES
+    for engine in js_engines: assert type(engine) == list
+    for engine in self.banned_js_engines: assert type(engine) == list
+    js_engines = filter(lambda engine: engine[0] not in map(lambda engine: engine[0], self.banned_js_engines), js_engines)
+    if 'BINARYEN_METHOD="native-wasm"' in self.emcc_args:
+      # when testing native wasm support, must use a vm with support
+      js_engines = filter(lambda engine: engine == SPIDERMONKEY_ENGINE or engine == V8_ENGINE, js_engines)
+    return js_engines
+
   def do_run_from_file(self, src, expected_output, args=[], output_nicerizer=None, output_processor=None, no_build=False, main_file=None, additional_files=[], js_engines=None, post_build=None, basename='src.cpp', libraries=[], includes=[], force_c=False, build_ll_hook=None, extra_emscripten_args=[]):
     self.do_run(open(src).read(), open(expected_output).read(),
                 args, output_nicerizer, output_processor, no_build, main_file,
@@ -626,11 +637,7 @@ class RunnerCore(unittest.TestCase):
                  build_ll_hook=build_ll_hook, extra_emscripten_args=extra_emscripten_args, post_build=post_build)
 
     # Run in both JavaScript engines, if optimizing - significant differences there (typed arrays)
-    if js_engines is None:
-      js_engines = JS_ENGINES
-    for engine in js_engines: assert type(engine) == list
-    for engine in self.banned_js_engines: assert type(engine) == list
-    js_engines = filter(lambda engine: engine[0] not in map(lambda engine: engine[0], self.banned_js_engines), js_engines)
+    js_engines = self.filtered_js_engines(js_engines)
     if len(js_engines) == 0: return self.skip('No JS engine present to run this test with. Check %s and the paths therein.' % EM_CONFIG)
     if len(js_engines) > 1 and not self.use_all_engines:
       if SPIDERMONKEY_ENGINE in js_engines: # make sure to get asm.js validation checks, using sm
@@ -702,6 +709,14 @@ def server_func(dir, q):
       if 'report_' in self.path:
         print '[server response:', self.path, ']'
         q.put(self.path)
+        # Send a default OK response to the browser.
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.send_header('Cache-Control','no-cache, must-revalidate')
+        self.send_header('Connection','close')
+        self.send_header('Expires','-1')
+        self.end_headers()
+        self.wfile.write('OK')
       else:
         # Use SimpleHTTPServer default file serving operation for GET.
         SimpleHTTPServer.SimpleHTTPRequestHandler.do_GET(self)
@@ -928,7 +943,7 @@ class BrowserCore(RunnerCore):
 
 def get_zlib_library(runner_core):
   if WINDOWS:
-    return runner_core.get_library('zlib', os.path.join('libz.a'), configure=['emconfigure.bat'], configure_args=['cmake', '.', '-DBUILD_SHARED_LIBS=OFF'], make=['mingw32-make'], make_args=[])
+    return runner_core.get_library('zlib', os.path.join('libz.a'), configure=[path_from_root('emconfigure.bat')], configure_args=['cmake', '.', '-DBUILD_SHARED_LIBS=OFF'], make=['mingw32-make'], make_args=[])
   else:
     return runner_core.get_library('zlib', os.path.join('libz.a'), make_args=['libz.a'])
 
@@ -970,7 +985,7 @@ if __name__ == '__main__':
 
   # Sanity checks
   total_engines = len(JS_ENGINES)
-  JS_ENGINES = filter(check_engine, JS_ENGINES)
+  JS_ENGINES = filter(jsrun.check_engine, JS_ENGINES)
   if len(JS_ENGINES) == 0:
     print 'WARNING: None of the JS engines in JS_ENGINES appears to work.'
   elif len(JS_ENGINES) < total_engines:
