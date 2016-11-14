@@ -4451,6 +4451,12 @@ def process(filename):
     out = path_from_root('tests', 'fs', 'test_writeFile.out')
     self.do_run_from_file(src, out)
 
+  def test_fs_write(self):
+    self.emcc_args = ['-s', 'MEMFS_APPEND_TO_TYPED_ARRAYS=1']
+    src = path_from_root('tests', 'fs', 'test_write.cpp')
+    out = path_from_root('tests', 'fs', 'test_write.out')
+    self.do_run_from_file(src, out)
+
   def test_fs_emptyPath(self):
     src = path_from_root('tests', 'fs', 'test_emptyPath.c')
     out = path_from_root('tests', 'fs', 'test_emptyPath.out')
@@ -5327,7 +5333,6 @@ def process(filename):
                  includes=[path_from_root('tests', 'sqlite')],
                  force_c=True)
 
-  @no_wasm_backend()
   def test_zlib(self):
     if '-O2' in self.emcc_args and 'ASM_JS=0' not in self.emcc_args and not self.is_wasm(): # without asm, closure minifies Math.imul badly
       self.emcc_args += ['--closure', '1'] # Use closure here for some additional coverage
@@ -6121,6 +6126,30 @@ def process(filename):
       self.emcc_args += ['--profiling-funcs', '--llvm-opts', '0']
 
     self.do_run_in_out_file_test('tests', 'core', 'test_demangle_stacks')
+
+  @no_emterpreter
+  @no_wasm_backend()
+  def test_demangle_stacks_symbol_map(self):
+    Settings.DEMANGLE_SUPPORT = 1
+    if '-O' in str(self.emcc_args):
+      self.emcc_args += ['--llvm-opts', '0']
+    self.emcc_args += ['--emit-symbol-map']
+    self.do_run(open(path_from_root('tests', 'core', 'test_demangle_stacks.c')).read(), 'abort')
+    # make sure the shortened name is the right one
+    symbols = open('src.cpp.o.js.symbols').read().split(os.linesep)
+    for line in symbols:
+      if ':' not in line: continue
+      short, full = line.split(':')
+      if 'Aborter' in full:
+        short_aborter = short
+        full_aborter = full
+    if SPIDERMONKEY_ENGINE and os.path.exists(SPIDERMONKEY_ENGINE[0]):
+      output = run_js('src.cpp.o.js', engine=SPIDERMONKEY_ENGINE, stderr=PIPE, full_output=True, assert_returncode=None)
+      # we may see the full one, if -g, or the short one if not
+      if ' ' + short_aborter + ' ' not in output and ' ' + full_aborter + ' ' not in output:
+        # stack traces may also be ' name ' or 'name@' etc
+        if '\n' + short_aborter + ' ' not in output and '\n' + full_aborter + ' ' not in output and 'wasm-function[' + short_aborter + ']' not in output:
+          self.assertContained(' ' + short_aborter + ' ' + '\n' + ' ' + full_aborter + ' ', output)
 
   def test_tracing(self):
     Building.COMPILER_TEST_OPTS += ['--tracing']
