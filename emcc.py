@@ -115,6 +115,8 @@ def run():
   if len(sys.argv) <= 1 or ('--help' not in sys.argv and len(sys.argv) >= 2 and sys.argv[1] != '--version'):
     shared.check_sanity(force=DEBUG)
 
+  misc_temp_files = shared.configuration.get_temp_files()
+
   # Handle some global flags
 
   if len(sys.argv) == 1:
@@ -179,6 +181,22 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
 
   elif '-dumpmachine' in sys.argv:
     print shared.get_llvm_target()
+    exit(0)
+
+  elif '--cflags' in sys.argv:
+    # fake running the command, to see the full args we pass to clang
+    debug_env = os.environ.copy()
+    debug_env['EMCC_DEBUG'] = '1'
+    args = filter(lambda x: x != '--cflags', sys.argv)
+    with misc_temp_files.get_file(suffix='.o') as temp_target:
+      input_file = 'hello_world.c'
+      out, err = subprocess.Popen([shared.PYTHON] + args + [shared.path_from_root('tests', input_file), '-c', '-o', temp_target], stderr=subprocess.PIPE, env=debug_env).communicate()
+      lines = filter(lambda x: shared.CLANG_CC in x and input_file in x, err.split(os.linesep))
+      line = lines[0]
+      assert 'running:' in line
+      parts = line.split(' ')[2:]
+      parts = filter(lambda x: x != '-c' and x != '-o' and input_file not in x and temp_target not in x and '-emit-llvm' not in x, parts)
+      print ' '.join(parts)
     exit(0)
 
   def is_minus_s_for_emcc(newargs, i):
@@ -250,7 +268,11 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
     if compiler == shared.EMCC: compiler = [shared.PYTHON, shared.EMCC]
     else: compiler = [compiler]
     cmd = compiler + list(filter_emscripten_options(sys.argv[1:]))
-    if not use_js: cmd += shared.EMSDK_OPTS + ['-D__EMSCRIPTEN__', '-DEMSCRIPTEN']
+    if not use_js:
+      cmd += shared.EMSDK_OPTS + ['-D__EMSCRIPTEN__']
+      # The preprocessor define EMSCRIPTEN is deprecated. Don't pass it to code in strict mode. Code should use the define __EMSCRIPTEN__ instead.
+      if not shared.Settings.STRICT:
+        cmd += ['-DEMSCRIPTEN']
     if use_js: cmd += ['-s', 'ERROR_ON_UNDEFINED_SYMBOLS=1'] # configure tests should fail when an undefined symbol exists
 
     logging.debug('just configuring: ' + ' '.join(cmd))
@@ -396,8 +418,6 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
       TimeLogger.update()
 
   use_cxx = True
-
-  misc_temp_files = shared.configuration.get_temp_files()
 
   try:
     with ToolchainProfiler.profile_block('parse arguments and setup'):
@@ -918,6 +938,29 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
       if separate_asm:
         shared.Settings.SEPARATE_ASM = os.path.basename(asm_target)
 
+      if 'EMCC_STRICT' in os.environ:
+        shared.Settings.STRICT = os.environ.get('EMCC_STRICT') != '0'
+
+      # Libraries are searched before settings_changes are applied, so apply the value for STRICT and ERROR_ON_MISSING_LIBRARIES from
+      # command line already now.
+
+      def get_last_setting_change(setting):
+        return ([None] + filter(lambda x: x.startswith(setting + '='), settings_changes))[-1]
+
+      strict_cmdline = get_last_setting_change('STRICT')
+      if strict_cmdline:
+        shared.Settings.STRICT = int(strict_cmdline[len('STRICT='):])
+
+      if shared.Settings.STRICT:
+        shared.Settings.ERROR_ON_UNDEFINED_SYMBOLS = 1
+        shared.Settings.ERROR_ON_MISSING_LIBRARIES = 1
+
+      error_on_missing_libraries_cmdline = get_last_setting_change('ERROR_ON_MISSING_LIBRARIES')
+      if error_on_missing_libraries_cmdline:
+        shared.Settings.ERROR_ON_MISSING_LIBRARIES = int(error_on_missing_libraries_cmdline[len('ERROR_ON_MISSING_LIBRARIES='):])
+
+      system_js_libraries = []
+
       # Find library files
       for i, lib in libs:
         logging.debug('looking for library "%s"', lib)
@@ -934,8 +977,13 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
                 break
             if found: break
           if found: break
-        if not found and lib not in ['GL', 'GLU', 'glut', 'm', 'c', 'SDL', 'stdc++', 'pthread']: # whitelist our default libraries
-          logging.warning('emcc: cannot find library "%s"', lib)
+        if not found:
+          system_js_libraries += shared.Building.path_to_system_js_libraries(lib)
+
+      # Certain linker flags imply some link libraries to be pulled in by default.
+      system_js_libraries += shared.Building.path_to_system_js_libraries_for_settings(settings_changes)
+
+      settings_changes.append('SYSTEM_JS_LIBRARIES="' + ','.join(system_js_libraries) + '"')
 
       # If not compiling to JS, then we are compiling to an intermediate bitcode objects or library, so
       # ignore dynamic linking, since multiple dynamic linkings can interfere with each other
@@ -999,6 +1047,15 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
       if shared.get_llvm_target() == shared.WASM_TARGET:
         shared.Settings.WASM_BACKEND = 1
 
+      if not shared.Settings.STRICT:
+        # The preprocessor define EMSCRIPTEN is deprecated. Don't pass it to code in strict mode. Code should use the define __EMSCRIPTEN__ instead.
+        shared.COMPILER_OPTS += ['-DEMSCRIPTEN']
+
+        # The system include path system/include/emscripten/ is deprecated, i.e. instead of #include <emscripten.h>, one should pass in #include <emscripten/emscripten.h>.
+        # This path is not available in Emscripten strict mode.
+        if shared.USE_EMSDK:
+          shared.C_INCLUDE_PATHS += [shared.path_from_root('system', 'include', 'emscripten')]
+
       # Use settings
 
       try:
@@ -1051,10 +1108,6 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
         shared.Settings.PRECISE_I64_MATH = 1 # other might use precise math, we need to be able to print it
         assert not use_closure_compiler, 'cannot use closure compiler on shared modules'
         assert not shared.Settings.ALLOW_MEMORY_GROWTH, 'memory growth is not supported with shared modules yet'
-
-      if shared.Settings.ALLOW_MEMORY_GROWTH:
-        logging.warning('not all asm.js optimizations are possible with ALLOW_MEMORY_GROWTH, disabling those')
-        shared.Settings.ASM_JS = 2 # memory growth does not validate as asm.js http://discourse.wicg.io/t/request-for-comments-switching-resizing-heaps-in-asm-js/641/23
 
       if shared.Settings.EMULATE_FUNCTION_POINTER_CASTS:
         shared.Settings.ALIASING_FUNCTION_POINTERS = 0
@@ -1155,13 +1208,16 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
 
       if shared.Settings.USE_PTHREADS:
         if shared.Settings.LINKABLE:
-          logging.error('-s LINKABLE=1 is not supported with -s USE_PTHREADS=1!')
+          logging.error('-s LINKABLE=1 is not supported with -s USE_PTHREADS>0!')
           exit(1)
         if shared.Settings.SIDE_MODULE:
-          logging.error('-s SIDE_MODULE=1 is not supported with -s USE_PTHREADS=1!')
+          logging.error('-s SIDE_MODULE=1 is not supported with -s USE_PTHREADS>0!')
           exit(1)
         if shared.Settings.MAIN_MODULE:
-          logging.error('-s MAIN_MODULE=1 is not supported with -s USE_PTHREADS=1!')
+          logging.error('-s MAIN_MODULE=1 is not supported with -s USE_PTHREADS>0!')
+          exit(1)
+        if shared.Settings.EMTERPRETIFY:
+          logging.error('-s EMTERPRETIFY=1 is not supported with -s USE_PTHREADS>0!')
           exit(1)
 
       if shared.Settings.OUTLINING_LIMIT:
@@ -1215,6 +1271,12 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
         #  * if we also supported js mem inits we'd have 4 modes
         #  * and js mem inits are useful for avoiding a side file, but the wasm module avoids that anyhow
         memory_init_file = True
+
+      if shared.Settings.ALLOW_MEMORY_GROWTH and shared.Settings.ASM_JS == 1:
+        # this is an issue in asm.js, but not wasm
+        if not shared.Settings.WASM or 'asmjs' in shared.Settings.BINARYEN_METHOD:
+          logging.warning('not all asm.js optimizations are possible with ALLOW_MEMORY_GROWTH, disabling those')
+          shared.Settings.ASM_JS = 2 # memory growth does not validate as asm.js http://discourse.wicg.io/t/request-for-comments-switching-resizing-heaps-in-asm-js/641/23
 
       if js_opts:
         shared.Settings.RUNNING_JS_OPTS = 1
@@ -1986,6 +2048,14 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
           temp = asm_target + '.only.js'
           print jsrun.run_js(shared.path_from_root('tools', 'js-optimizer.js'), shared.NODE_JS, args=[asm_target, 'eliminateDeadGlobals', 'last', 'asm'], stdout=open(temp, 'w'))
           shutil.move(temp, asm_target)
+
+      if shared.Settings.BINARYEN_METHOD:
+        methods = shared.Settings.BINARYEN_METHOD.split(',')
+        valid_methods = ['asmjs', 'native-wasm', 'interpret-s-expr', 'interpret-binary', 'interpret-asm2wasm']
+        for m in methods:
+          if not m.strip() in valid_methods:
+            logging.error('Unrecognized BINARYEN_METHOD "' + m.strip() + '" specified! Please pass a comma-delimited list containing one or more of: ' + ','.join(valid_methods))
+            sys.exit(1)
 
       if shared.Settings.BINARYEN:
         logging.debug('using binaryen, with method: ' + shared.Settings.BINARYEN_METHOD)

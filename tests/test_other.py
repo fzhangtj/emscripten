@@ -398,6 +398,17 @@ f.close()
       os.chdir(path_from_root('tests')) # Move away from the directory we are about to remove.
       shutil.rmtree(tempdirname)
 
+  def test_emcc_cflags(self):
+    # see we print them out
+    output = Popen([PYTHON, EMCC, '--cflags'], stdout=PIPE, stderr=PIPE).communicate()
+    flags = output[0].strip()
+    self.assertContained(' '.join(COMPILER_OPTS), flags)
+    # check they work
+    cmd = [CLANG, path_from_root('tests', 'hello_world.cpp')] + flags.split(' ') + ['-c', '-emit-llvm', '-o', 'a.bc']
+    subprocess.check_call(cmd)
+    subprocess.check_call([PYTHON, EMCC, 'a.bc'])
+    self.assertContained('hello, world!', run_js(self.in_dir('a.out.js')))
+
   def test_emar_em_config_flag(self):
     # We expand this in case the EM_CONFIG is ~/.emscripten (default)
     config = os.path.expanduser(EM_CONFIG)
@@ -854,6 +865,33 @@ This pointer might make sense in another type signature:''', '''Invalid function
     self.assertContained('hello from lib', run_js(aout))
 
     assert not os.path.exists('a.out') and not os.path.exists('a.exe'), 'Must not leave unneeded linker stubs'
+
+  def test_commons_link(self):
+    open('a.h', 'w').write(r'''
+#if !defined(A_H)
+#define A_H
+extern int foo[8];
+#endif
+''')
+    open('a.c', 'w').write(r'''
+#include "a.h"
+int foo[8];
+''')
+    open('main.c', 'w').write(r'''
+#include <stdio.h>
+#include "a.h"
+
+int main() {
+    printf("|%d|\n", foo[0]);
+    return 0;
+}
+''')
+
+    subprocess.check_call([PYTHON, EMCC, '-o', 'a.o', 'a.c'])
+    subprocess.check_call([PYTHON, EMAR, 'rv', 'library.a', 'a.o'])
+    subprocess.check_call([PYTHON, EMCC, '-o', 'main.o', 'main.c'])
+    subprocess.check_call([PYTHON, EMCC, '-o', 'a.js', 'main.o', 'library.a', '-s', 'ERROR_ON_UNDEFINED_SYMBOLS=1'])
+    self.assertContained('|0|', run_js('a.js'))
 
   def test_outline(self):
     if WINDOWS and not Building.which('mingw32-make'):
@@ -6974,6 +7012,11 @@ int main() {
     subprocess.check_call([PYTHON, EMCC, path_from_root('tests', 'hello_world.cpp'), '-s', 'WASM=1', '-s', 'BINARYEN_METHOD="native-wasm"', '-s', 'TOTAL_MEMORY=' + str(16*1024*1024), '--pre-js', 'pre.js', '-s', 'ALLOW_MEMORY_GROWTH=1'])
     self.assertContained('hello, world!', run_js('a.out.js', engine=SPIDERMONKEY_ENGINE))
 
+  def test_binaryen_invalid_method(self):
+    proc = Popen([PYTHON, EMCC, path_from_root('tests', 'hello_world.cpp'), '-o', 'test.js', '-s', "BINARYEN_METHOD='invalid'"])
+    proc.communicate()
+    assert proc.returncode != 0
+
   def test_binaryen_default_method(self):
     if SPIDERMONKEY_ENGINE not in JS_ENGINES: return self.skip('cannot run without spidermonkey')
     subprocess.check_call([PYTHON, EMCC, path_from_root('tests', 'hello_world.cpp'), '-s', 'WASM=1'])
@@ -7040,3 +7083,24 @@ int main() {
     except SystemExit as e:
       caught_exit = e.code
     self.assertEqual(1, caught_exit, 'Did not catch SystemExit with bogus JS engine')
+
+  def test_error_on_missing_libraries(self):
+    env = os.environ.copy()
+    if 'EMCC_STRICT' in env: del env['EMCC_STRICT']
+
+    process = Popen([PYTHON, EMCC, path_from_root('tests', 'hello_world.cpp'), '-lsomenonexistingfile', '-s', 'STRICT=1'], stdout=PIPE, stderr=PIPE, env=env)
+    process.communicate()
+    assert process.returncode is not 0, '-llsomenonexistingfile is an error in strict mode'
+
+    process = Popen([PYTHON, EMCC, path_from_root('tests', 'hello_world.cpp'), '-lsomenonexistingfile', '-s', 'ERROR_ON_MISSING_LIBRARIES=0'], stdout=PIPE, stderr=PIPE, env=env)
+    process.communicate()
+    assert process.returncode is 0, '-llsomenonexistingfile is not an error if -s ERROR_ON_MISSING_LIBRARIES=0 is passed'
+
+    process = Popen([PYTHON, EMCC, path_from_root('tests', 'hello_world.cpp'), '-lsomenonexistingfile', '-s', 'STRICT=1', '-s', 'ERROR_ON_MISSING_LIBRARIES=0'], stdout=PIPE, stderr=PIPE, env=env)
+    process.communicate()
+    assert process.returncode is 0, '-s ERROR_ON_MISSING_LIBRARIES=0 should override -s STRICT=1'
+
+    process = Popen([PYTHON, EMCC, path_from_root('tests', 'hello_world.cpp'), '-lsomenonexistingfile', '-s', 'STRICT=0'], stdout=PIPE, stderr=PIPE, env=env)
+    process.communicate()
+    # TODO: TEMPORARY: When -s ERROR_ON_MISSING_LIBRARIES=1 becomes the default, change the following line to expect failure instead of 0.
+    assert process.returncode is 0, '-llsomenonexistingfile is not yet an error in non-strict mode'

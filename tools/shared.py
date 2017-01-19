@@ -927,8 +927,7 @@ COMPILER_OPTS = COMPILER_OPTS + [#'-fno-threadsafe-statics', # disabled due to i
 
 if LLVM_TARGET == WASM_TARGET:
   # wasm target does not automatically define emscripten stuff, so do it here.
-  COMPILER_OPTS = COMPILER_OPTS + ['-DEMSCRIPTEN',
-                                   '-D__EMSCRIPTEN__',
+  COMPILER_OPTS = COMPILER_OPTS + ['-D__EMSCRIPTEN__',
                                    '-Dunix',
                                    '-D__unix',
                                    '-D__unix__']
@@ -950,7 +949,6 @@ if USE_EMSDK:
   C_INCLUDE_PATHS = [
     path_from_root('system', 'include', 'compat'),
     path_from_root('system', 'include'),
-    path_from_root('system', 'include', 'emscripten'),
     path_from_root('system', 'include', 'SSE'),
     path_from_root('system', 'include', 'libc'),
     path_from_root('system', 'lib', 'libc', 'musl', 'arch', 'emscripten'),
@@ -1215,6 +1213,15 @@ class Building:
     env['CROSS_COMPILE'] = path_from_root('em') # produces /path/to/emscripten/em , which then can have 'cc', 'ar', etc appended to it
     return env
 
+  # if we are in emmake mode, i.e., we changed the env to run emcc etc., then show the message and abort
+  @staticmethod
+  def ensure_no_emmake(message):
+    non_native = Building.get_building_env()
+    if os.environ.get('CC') == non_native.get('CC'):
+      # the environment CC is the one we change to when forcing our em* tools
+      logging.error(message)
+      sys.exit(1)
+
   # Finds the given executable 'program' in PATH. Operates like the Unix tool 'which'.
   @staticmethod
   def which(program):
@@ -1447,15 +1454,16 @@ class Building:
     # returns True.
     def consider_object(f, force_add=False):
       new_symbols = Building.llvm_nm(f)
-      do_add = force_add or not unresolved_symbols.isdisjoint(new_symbols.defs)
+      provided = new_symbols.defs.union(new_symbols.commons)
+      do_add = force_add or not unresolved_symbols.isdisjoint(provided)
       if do_add:
         logging.debug('adding object %s to link' % (f))
         # Update resolved_symbols table with newly resolved symbols
-        resolved_symbols.update(new_symbols.defs)
+        resolved_symbols.update(provided)
         # Update unresolved_symbols table by adding newly unresolved symbols and
         # removing newly resolved symbols.
         unresolved_symbols.update(new_symbols.undefs.difference(resolved_symbols))
-        unresolved_symbols.difference_update(new_symbols.defs)
+        unresolved_symbols.difference_update(provided)
         actual_files.append(f)
       return do_add
 
@@ -1486,7 +1494,7 @@ class Building:
             dirname = os.path.dirname(content)
             if dirname:
               safe_ensure_dirs(dirname)
-          Popen([LLVM_AR, 'xo', f], stdout=PIPE).communicate() # if absolute paths, files will appear there. otherwise, in this directory
+          Popen([LLVM_AR, 'x', f], stdout=PIPE).communicate() # if absolute paths, files will appear there. otherwise, in this directory
           contents = map(lambda content: os.path.join(temp_dir, content), contents)
           contents = filter(os.path.exists, map(os.path.abspath, contents))
           contents = filter(Building.is_bitcode, contents)
@@ -1967,6 +1975,60 @@ class Building:
 
       import gen_struct_info
       gen_struct_info.main(['-qo', info_path, path_from_root('src/struct_info.json')])
+
+  @staticmethod
+  # Given the name of a special Emscripten-implemented system library, returns an array of absolute paths to JS library
+  # files inside emscripten/src/ that corresponds to the library name.
+  def path_to_system_js_libraries(library_name):
+    # Some native libraries are implemented in Emscripten as system side JS libraries
+    js_system_libraries = {
+      'c': '',
+      'EGL': 'library_egl.js',
+      'GL': 'library_gl.js',
+      'GLESv2': 'library_gl.js',
+      'GLEW': 'library_glew.js',
+      'glfw': 'library_glfw.js',
+      'glfw3': 'library_glfw.js',
+      'GLU': '',
+      'glut': 'library_glut.js',
+      'm': '',
+      'openal': 'library_openal.js',
+      'pthread': '',
+      'X11': 'library_xlib.js',
+      'SDL': 'library_sdl.js',
+      'stdc++': '',
+      'uuid': 'library_uuid.js'
+    }
+    library_files = []
+    if library_name in js_system_libraries:
+      if len(js_system_libraries[library_name]) > 0:
+        library_files += [js_system_libraries[library_name]]
+
+        # TODO: This is unintentional due to historical reasons. Improve EGL to use HTML5 API to avoid depending on GLUT.
+        if library_name == 'EGL': library_files += ['library_glut.js']
+
+    elif library_name.endswith('.js') and os.path.isfile(path_from_root('src', 'library_' + library_name)):
+      library_files += ['library_' + library_name]
+    else:
+      if Settings.ERROR_ON_MISSING_LIBRARIES:
+        logging.fatal('emcc: cannot find library "%s"', library_name)
+        exit(1)
+      else:
+        logging.warning('emcc: cannot find library "%s"', library_name)
+
+    return library_files
+
+  @staticmethod
+  # Given a list of Emscripten link settings, returns a list of paths to system JS libraries
+  # that should get linked automatically in to the build when those link settings are present.
+  def path_to_system_js_libraries_for_settings(link_settings):
+    system_js_libraries =[]
+    if 'EMTERPRETIFY_ASYNC=1' in link_settings: system_js_libraries += ['library_async.js']
+    if 'ASYNCIFY=1' in link_settings: system_js_libraries += ['library_async.js']
+    if 'LZ4=1' in link_settings: system_js_libraries += ['library_lz4.js']
+    if 'USE_SDL=1' in link_settings: system_js_libraries += ['library_sdl.js']
+    if 'USE_SDL=2' in link_settings: system_js_libraries += ['library_egl.js', 'library_glut.js', 'library_gl.js']
+    return map(lambda x: path_from_root('src', x), system_js_libraries)
 
 # compatibility with existing emcc, etc. scripts
 Cache = cache.Cache(debug=DEBUG_CACHE)
