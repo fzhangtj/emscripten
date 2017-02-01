@@ -2187,6 +2187,11 @@ Module["preRun"].push(function () {
   def test_webgl2_ubos(self):
     self.btest(path_from_root('tests', 'webgl2_ubos.cpp'), args=['-s', 'USE_WEBGL2=1', '-lGL'], expected='0')
 
+  def test_webgl2_garbage_free_entrypoints(self):
+    return self.skip('TODO juj: Missing webgl2_garbage_free_entrypoints.cpp')
+    self.btest(path_from_root('tests', 'webgl2_garbage_free_entrypoints.cpp'), args=['-s', 'USE_WEBGL2=1', '-DTEST_WEBGL2=1'], expected='1')
+    self.btest(path_from_root('tests', 'webgl2_garbage_free_entrypoints.cpp'), expected='1')
+
   def test_webgl_with_closure(self):
     self.btest(path_from_root('tests', 'webgl_with_closure.cpp'), args=['-O2', '-s', 'USE_WEBGL2=1', '--closure', '1', '-lGL'], expected='0')
 
@@ -2243,6 +2248,8 @@ open(filename, 'w').write(replaced)
     self.btest(path_from_root('tests', 'test_wget.c'), expected='1', args=['-s', 'ASYNCIFY=1'])
     print 'asyncify+emterpreter'
     self.btest(path_from_root('tests', 'test_wget.c'), expected='1', args=['-s', 'ASYNCIFY=1', '-s', 'EMTERPRETIFY=1'])
+    print 'emterpreter by itself'
+    self.btest(path_from_root('tests', 'test_wget.c'), expected='1', args=['-s', 'EMTERPRETIFY=1', '-s', 'EMTERPRETIFY_ASYNC=1'])
 
   def test_wget_data(self):
     with open(os.path.join(self.get_dir(), 'test.txt'), 'w') as f:
@@ -3273,6 +3280,44 @@ window.close = function() {
   def test_binaryen(self):
     self.btest('browser_test_hello_world.c', expected='0', args=['-s', 'BINARYEN=1', '-s', 'BINARYEN_METHOD="interpret-binary"'])
     self.btest('browser_test_hello_world.c', expected='0', args=['-s', 'BINARYEN=1', '-s', 'BINARYEN_METHOD="interpret-binary"', '-O2'])
+
+  def test_binaryen_native(self):
+    for opts in [[], ['-O1'], ['-O2'], ['-O3']]:
+      print opts
+      self.btest('browser_test_hello_world.c', expected='0', args=['-s', 'BINARYEN=1'] + opts)
+
+  def test_binaryen_async(self):
+    # notice when we use async compilation
+    open('shell.html', 'w').write(open(path_from_root('src', 'shell.html')).read().replace(
+      '''{{{ SCRIPT }}}''',
+      '''
+    <script>
+      // note if we do async compilation
+      var real_wasm_instantiate = WebAssembly.instantiate;
+      WebAssembly.instantiate = function(a, b) {
+        Module.sawAsyncCompilation = true;
+        return real_wasm_instantiate(a, b);
+      };
+      // show stderr for the viewer's fun
+      Module.printErr = function(x) {
+        Module.print('<<< ' + x + ' >>>');
+        console.log(x);
+      };
+    </script>
+    {{{ SCRIPT }}}
+''',
+    ))
+    for opts, expect in [
+      ([], 0),
+      (['-O1'], 1),
+      (['-O2'], 1),
+      (['-O3'], 1),
+      (['-s', 'BINARYEN_ASYNC_COMPILATION=1'], 1), # force it on
+      (['-O1', '-s', 'BINARYEN_ASYNC_COMPILATION=0'], 0), # force it off
+      (['-s', 'BINARYEN_ASYNC_COMPILATION=1', '-s', 'BINARYEN_METHOD="native-wasm,asmjs"'], 0), # try to force it on, but have it disabled
+    ]:
+      print opts, expect
+      self.btest('binaryen_async.c', expected=str(expect), args=['-s', 'BINARYEN=1', '--shell-file', 'shell.html'] + opts)
 
   def test_utf8_textdecoder(self):
     self.btest('benchmark_utf8.cpp', expected='0', args=['--embed-file', path_from_root('tests/utf8_corpus.txt') + '@/utf8_corpus.txt'])

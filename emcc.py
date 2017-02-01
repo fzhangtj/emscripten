@@ -1255,6 +1255,11 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
         os.environ['EMCC_WASM_BACKEND_BINARYEN'] = '1'
 
       if shared.Settings.BINARYEN:
+        # set file locations, so that JS glue can find what it needs
+        shared.Settings.WASM_TEXT_FILE = os.path.basename(wasm_text_target)
+        shared.Settings.WASM_BINARY_FILE = os.path.basename(wasm_binary_target)
+        shared.Settings.ASMJS_CODE_FILE = os.path.basename(asm_target)
+
         shared.Settings.ASM_JS = 2 # when targeting wasm, we use a wasm Memory, but that is not compatible with asm.js opts
         debug_level = max(1, debug_level) # keep whitespace readable, for asm.js parser simplicity
         shared.Settings.GLOBAL_BASE = 1024 # leave some room for mapping global vars
@@ -1282,6 +1287,20 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
         if shared.Building.is_wasm_only() and shared.Settings.EVAL_CTORS:
           logging.debug('disabling EVAL_CTORS, as in wasm-only mode it hurts more than it helps. TODO: a wasm version of it')
           shared.Settings.EVAL_CTORS = 0
+        # enable async compilation if optimizing and not turned off manually
+        if opt_level > 0:
+          if 'BINARYEN_ASYNC_COMPILATION=0' not in settings_changes:
+            shared.Settings.BINARYEN_ASYNC_COMPILATION = 1
+        if shared.Settings.BINARYEN_ASYNC_COMPILATION == 1:
+          if shared.Building.is_wasm_only():
+            # async compilation requires a swappable module - we swap it in when it's ready
+            shared.Settings.SWAPPABLE_ASM_MODULE = 1
+          else:
+            # if not wasm-only, we can't do async compilation as the build can run in other
+            # modes than wasm (like asm.js) which may not support an async step
+            shared.Settings.BINARYEN_ASYNC_COMPILATION = 0
+            if 'BINARYEN_ASYNC_COMPILATION=1' in settings_changes:
+              logging.warning('BINARYEN_ASYNC_COMPILATION requested, but disabled since not in wasm-only mode')
 
       # wasm outputs are only possible with a side wasm
       if target.endswith(WASM_ENDINGS):
@@ -1643,9 +1662,11 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
       if DEBUG: save_intermediate('original')
 
       if shared.Settings.WASM_BACKEND:
-        # we also received wasm at this stage
-        wasm_temp = final[:-3] + '.wast'
-        shutil.move(wasm_temp, wasm_text_target)
+        # we also received wast and wasm at this stage
+        temp_basename = final[:-3]
+        wast_temp = temp_basename + '.wast'
+        shutil.move(wast_temp, wasm_text_target)
+        shutil.move(temp_basename + '.wasm', wasm_binary_target)
         open(wasm_text_target + '.mappedGlobals', 'w').write('{}') # no need for mapped globals for now, but perhaps some day
 
       if shared.Settings.CYBERDWARF:
@@ -1684,20 +1705,6 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
           file_args.append('--use-preload-plugins')
         file_code = execute([shared.PYTHON, shared.FILE_PACKAGER, unsuffixed(target) + '.data'] + file_args, stdout=PIPE)[0]
         pre_js = file_code + pre_js
-
-      if shared.Settings.BINARYEN:
-        # add in the glue integration code as a pre-js, so it is optimized together with everything else
-        wasm_js_glue = open(os.path.join(shared.Settings.BINARYEN_ROOT, 'src', 'js', 'wasm.js-post.js')).read()
-        wasm_js_glue = wasm_js_glue.replace('{{{ asmjsCodeFile }}}', '"' + os.path.basename(asm_target) + '"')
-        wasm_js_glue = wasm_js_glue.replace('{{{ wasmTextFile }}}', '"' + os.path.basename(wasm_text_target) + '"')
-        wasm_js_glue = wasm_js_glue.replace('{{{ wasmBinaryFile }}}', '"' + os.path.basename(wasm_binary_target) + '"')
-        if shared.Settings.BINARYEN_METHOD:
-          wasm_js_glue = wasm_js_glue.replace('{{{ wasmJSMethod }}}', '(Module[\'wasmJSMethod\'] || "' + shared.Settings.BINARYEN_METHOD + '")')
-        else:
-          wasm_js_glue = wasm_js_glue.replace('{{{ wasmJSMethod }}}', 'null')
-        wasm_js_glue = wasm_js_glue.replace('{{{ WASM_BACKEND }}}', str(shared.Settings.WASM_BACKEND)) # if wasm backend, wasm contains memory segments
-        wasm_js_glue += '\nintegrateWasmJS(Module);\n' # add a call
-        post_module += str(wasm_js_glue) # we can set up the glue once we have the module
 
       # Apply pre and postjs files
       if pre_js or post_module or post_js:
@@ -2060,10 +2067,8 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
       # Separate out the asm.js code, if asked. Or, if necessary for another option
       if (separate_asm or shared.Settings.BINARYEN) and not shared.Settings.WASM_BACKEND:
         logging.debug('separating asm')
-        with misc_temp_files.get_file(suffix='.js') as temp_target:
-          subprocess.check_call([shared.PYTHON, shared.path_from_root('tools', 'separate_asm.py'), js_target, asm_target, temp_target])
-          generated_text_files_with_native_eols += [asm_target]
-          shutil.move(temp_target, js_target)
+        subprocess.check_call([shared.PYTHON, shared.path_from_root('tools', 'separate_asm.py'), js_target, asm_target, js_target])
+        generated_text_files_with_native_eols += [asm_target]
 
         # extra only-my-code logic
         if shared.Settings.ONLY_MY_CODE:
@@ -2121,26 +2126,27 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
             cmd += ['--mem-max=' + str(shared.Settings.BINARYEN_MEM_MAX)]
           if shared.Building.is_wasm_only():
             cmd += ['--wasm-only'] # this asm.js is code not intended to run as asm.js, it is only ever going to be wasm, an can contain special fastcomp-wasm support
+          if debug_level >= 2 or profiling_funcs:
+            cmd += ['-g']
+          if emit_symbol_map or shared.Settings.CYBERDWARF:
+            cmd += ['--symbolmap=' + target + '.symbols']
+          cmd += ['-o', wasm_binary_target]
           logging.debug('asm2wasm (asm.js => WebAssembly): ' + ' '.join(cmd))
           TimeLogger.update()
-          subprocess.check_call(cmd, stdout=open(wasm_text_target, 'w'))
+          subprocess.check_call(cmd)
           if import_mem_init:
             # remove and forget about the mem init file in later processing; it does not need to be prefetched in the html, etc.
             os.unlink(memfile)
             memory_init_file = False
           log_time('asm2wasm')
         if shared.Settings.BINARYEN_PASSES:
-          shutil.move(wasm_text_target, wasm_text_target + '.pre')
-          cmd = [os.path.join(binaryen_bin, 'wasm-opt'), wasm_text_target + '.pre', '-o', wasm_text_target] + map(lambda p: '--' + p, shared.Settings.BINARYEN_PASSES.split(','))
+          shutil.move(wasm_binary_target, wasm_binary_target + '.pre')
+          cmd = [os.path.join(binaryen_bin, 'wasm-opt'), wasm_binary_target + '.pre', '-o', wasm_binary_target] + map(lambda p: '--' + p, shared.Settings.BINARYEN_PASSES.split(','))
           logging.debug('wasm-opt on BINARYEN_PASSES: ' + ' '.join(cmd))
           subprocess.check_call(cmd)
-        if 'native-wasm' in shared.Settings.BINARYEN_METHOD or 'interpret-binary' in shared.Settings.BINARYEN_METHOD:
-          cmd = [os.path.join(binaryen_bin, 'wasm-as'), wasm_text_target, '-o', wasm_binary_target]
-          if debug_level >= 2 or profiling_funcs:
-            cmd += ['-g']
-          if emit_symbol_map or shared.Settings.CYBERDWARF:
-            cmd += ['--symbolmap=' + target + '.symbols']
-          logging.debug('wasm-as (text => binary): ' + ' '.join(cmd))
+        if 'interpret-s-expr' in shared.Settings.BINARYEN_METHOD:
+          cmd = [os.path.join(binaryen_bin, 'wasm-dis'), wasm_binary_target, '-o', wasm_text_target]
+          logging.debug('wasm-dis (binary => text): ' + ' '.join(cmd))
           subprocess.check_call(cmd)
         if shared.Settings.BINARYEN_SCRIPTS:
           binaryen_scripts = os.path.join(shared.Settings.BINARYEN_ROOT, 'scripts')

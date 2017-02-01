@@ -226,7 +226,7 @@ else:
     config_file = config_file.replace('\'{{{ EMSCRIPTEN_ROOT }}}\'', repr(__rootpath__))
     llvm_root = os.path.dirname(find_executable('llvm-dis') or '/usr/bin/llvm-dis')
     config_file = config_file.replace('\'{{{ LLVM_ROOT }}}\'', repr(llvm_root))
-    binaryen_root = os.path.dirname(find_executable('asm2wasm') or '/usr/bin/asm2wasm')
+    binaryen_root = os.path.dirname(find_executable('asm2wasm') or '') # if we don't find it, we'll use the port
     config_file = config_file.replace('\'{{{ BINARYEN_ROOT }}}\'', repr(binaryen_root))
 
     node = find_executable('nodejs') or find_executable('node') or 'node'
@@ -1940,7 +1940,7 @@ class Building:
     try:
       if Building._is_ar_cache.get(filename):
         return Building._is_ar_cache[filename]
-      b = open(filename, 'r').read(8)
+      b = open(filename, 'rb').read(8)
       sigcheck = b[0] == '!' and b[1] == '<' and \
                  b[2] == 'a' and b[3] == 'r' and \
                  b[4] == 'c' and b[5] == 'h' and \
@@ -1954,7 +1954,8 @@ class Building:
   @staticmethod
   def is_bitcode(filename):
     # look for magic signature
-    b = open(filename, 'r').read(4)
+    b = open(filename, 'rb').read(4)
+    if len(b) < 4: return False
     if b[0] == 'B' and b[1] == 'C':
       return True
     # look for ar signature
@@ -1962,7 +1963,7 @@ class Building:
       return True
     # on OS X, there is a 20-byte prefix
     elif ord(b[0]) == 222 and ord(b[1]) == 192 and ord(b[2]) == 23 and ord(b[3]) == 11:
-      b = open(filename, 'r').read(24)
+      b = open(filename, 'rb').read(24)
       return b[20] == 'B' and b[21] == 'C'
 
     return False
