@@ -943,8 +943,8 @@ int main() {
     for test_opts, expected_ranges in [
       ([], {
          100: (150, 500),
-         250: (150, 600),
-         500: (150, 700),
+         250: (150, 800),
+         500: (150, 900),
         1000: (200, 1000),
         2000: (250, 2000),
         5000: (500, 5000),
@@ -6250,7 +6250,7 @@ Resolved: "/" => "/"
       sizes[lto] = os.stat('a.out.js').st_size
     print sizes
     assert sizes[1] < sizes[0] # lto reduces size
-    assert sizes[2] > sizes[0] # fake lto is aggressive at increasing code size
+    assert sizes[2] > sizes[1] # fake lto is aggressive at increasing code size compared to normal LTO
     assert sizes[3] not in set([sizes[0], sizes[1], sizes[2]]) # mode 3 is different (deterministic builds means this tests an actual change)
 
   def test_split_memory(self): # make sure multiple split memory chunks get used
