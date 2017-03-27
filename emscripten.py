@@ -330,7 +330,7 @@ def function_tables_and_exports(funcs, metadata, mem_init, glue, forwarded_data,
 
     staticbump = metadata['staticBump']
     while staticbump % 16 != 0: staticbump += 1
-    pre = pre.replace('STATICTOP = STATIC_BASE + 0;', '''STATICTOP = STATIC_BASE + %d;%s
+    pre = pre.replace('STATICTOP = STATIC_BASE + 0;', '''STATICTOP = Runtime.alignMemory(STATIC_BASE, 16) + %d;%s
   /* global initializers */ %s __ATINIT__.push(%s);
   %s''' % (staticbump,
            'assert(STATICTOP < SPLIT_MEMORY, "SPLIT_MEMORY size must be big enough so the entire static memory, need " + STATICTOP);' if settings['SPLIT_MEMORY'] else '',
