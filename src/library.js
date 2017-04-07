@@ -1215,7 +1215,7 @@ LibraryManager.library = {
   __cxa_end_catch__deps: ['__cxa_free_exception', '$EXCEPTIONS'],
   __cxa_end_catch: function() {
     // Clear state flag.
-    asm['setThrew'](0);
+    Module['asm']['setThrew'](0);
     // Call destructor if one is registered then clear it.
     var ptr = EXCEPTIONS.caught.pop();
 #if EXCEPTION_DEBUG
@@ -2788,7 +2788,7 @@ LibraryManager.library = {
 
   longjmp__deps: ['saveSetjmp', 'testSetjmp'],
   longjmp: function(env, value) {
-    asm['setThrew'](env, value || 1);
+    Module['asm']['setThrew'](env, value || 1);
     throw 'longjmp';
   },
   emscripten_longjmp__deps: ['longjmp'],

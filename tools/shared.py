@@ -2153,7 +2153,7 @@ class JS:
     %sModule["dynCall_%s"](%s);
   } catch(e) {
     if (typeof e !== 'number' && e !== 'longjmp') throw e;
-    asm["setThrew"](1, 0);
+    Module['asm']["setThrew"](1, 0);
   }
 }''' % ((' invoke_' + sig) if named else '', args, 'return ' if sig[0] != 'v' else '', sig, args)
     return ret
