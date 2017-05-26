@@ -32,6 +32,8 @@ var ASSERTIONS = 1; // Whether we should add runtime assertions, for example to
                     // of positive size, etc., whether we should throw if we encounter a bad __label__, i.e.,
                     // if code flow runs into a fault
                     // ASSERTIONS == 2 gives even more runtime checks
+var RUNTIME_LOGGING = 0; // Whether extra logging should be enabled.
+                         // This logging isn't quite assertion-quality in that it isn't necessarily a symptom that something is wrong.
 var STACK_OVERFLOW_CHECK = 0; // Chooses what kind of stack smash checks to emit to generated code:
                               // 0: Stack overflows are not checked.
                               // 1: Adds a security cookie at the top of the stack, which is checked at end of each tick and at exit (practically zero performance overhead)
@@ -264,6 +266,11 @@ var GL_UNSAFE_OPTS = 1; // Enables some potentially-unsafe optimizations in GL e
 var FULL_ES2 = 0;   // Forces support for all GLES2 features, not just the WebGL-friendly subset.
 var USE_WEBGL2 = 0; // Enables WebGL2 native functions. This mode will also create a WebGL2
                     // context by default if no version is specified.
+var WEBGL2_BACKWARDS_COMPATIBILITY_EMULATION = 0; // If true, emulates some WebGL 1 features on WebGL 2 contexts, meaning that applications that
+                                                  // use WebGL 1/GLES 2 can initialize a WebGL 2/GLES3 context, but still keep using WebGL1/GLES 2
+                                                  // functionality that no longer is supported in WebGL2/GLES3. Currently this emulates
+                                                  // GL_EXT_shader_texture_lod extension in GLSLES 1.00 shaders, support for unsized internal
+                                                  // texture formats, and the GL_HALF_FLOAT_OES != GL_HALF_FLOAT mixup.
 var FULL_ES3 = 0;   // Forces support for all GLES3 features, not just the WebGL2-friendly subset.
 var LEGACY_GL_EMULATION = 0; // Includes code to emulate various desktop GL features. Incomplete but useful
                              // in some cases, see http://kripken.github.io/emscripten-site/docs/porting/multimedia_and_graphics/OpenGL-support.html
@@ -271,7 +278,8 @@ var GL_FFP_ONLY = 0; // If you specified LEGACY_GL_EMULATION = 1 and only use fi
                      // you can also set this to 1 to signal the GL emulation layer that it can perform extra
                      // optimizations by knowing that the user code does not use shaders at all. If
                      // LEGACY_GL_EMULATION = 0, this setting has no effect.
-
+var GL_PREINITIALIZED_CONTEXT = 0; // If you want to create the WebGL context up front in JS code, set this to 1 and set Module['preinitializedWebGLContext']
+                                   // to a precreated WebGL context. WebGL initialization afterwards will use this GL context to render.
 var STB_IMAGE = 0; // Enables building of stb-image, a tiny public-domain library for decoding images, allowing
                    // decoding of images without using the browser's built-in decoders. The benefit is that this
                    // can be done synchronously, however, it will not be as fast as the browser itself.
@@ -572,6 +580,15 @@ var MODULARIZE = 0; // By default we emit all code in a straightforward way into
                     // Note the parentheses - we are calling EXPORT_NAME in order to instantiate
                     // the module. (This allows, in particular, for you to create multiple
                     // instantiations, etc.)
+                    //
+                    // Modularize also provides a promise-like API,
+                    //
+                    //   var instance = EXPORT_NAME().then(function(Module) { .. });
+                    //
+                    // The callback is called when it is safe to run compiled code, similar
+                    // to the onRuntimeInitialized callback (i.e., it waits for all
+                    // necessary async events). It receives the instance as a parameter,
+                    // for convenience.
 
 var BENCHMARK = 0; // If 1, will just time how long main() takes to execute, and not
                    // print out anything at all whatsoever. This is useful for benchmarking.
@@ -679,18 +696,28 @@ var BINARYEN_METHOD = "native-wasm"; // How we should run WebAssembly code. By d
                                      // See binaryen's src/js/wasm.js-post.js for more details and options.
 var BINARYEN_SCRIPTS = ""; // An optional comma-separated list of script hooks to run after binaryen,
                            // in binaryen's /scripts dir.
-var BINARYEN_IMPRECISE = 0; // Whether to apply imprecise/unsafe binaryen optimizations. If enabled,
-                            // code will run faster, but some types of undefined behavior might
-                            // trap in wasm.
+var BINARYEN_IGNORE_IMPLICIT_TRAPS = 0; // Whether to ignore implicit traps when optimizing in binaryen.
+                                        // Implicit traps are the unlikely traps that happen in a load that
+                                        // is out of bounds, or div/rem of 0, etc. We can reorder them,
+                                        // but we can't ignore that they have side effects, so turning on
+                                        // this flag lets us do a little more to reduce code size.
+var BINARYEN_TRAP_MODE = "allow"; // How we handle wasm operations that may trap, which includes integer
+                                  // div/rem of 0 and float-to-int of values too large to fit in an int.
+                                  //   js: do exactly what js does. this can be slower.
+                                  //   clamp: avoid traps by clamping to a reasonable value. this can be
+                                  //          faster than "js".
+                                  //   allow: allow creating operations that can trap. this is the most
+                                  //          compact, as we just emit a single wasm operation, with no
+                                  //          guards to trapping values, and also often the fastest.
 var BINARYEN_PASSES = ""; // A comma-separated list of passes to run in the binaryen optimizer,
                           // for example, "dce,precompute,vacuum".
                           // When set, this overrides the default passes we would normally run.
 var BINARYEN_MEM_MAX = -1; // Set the maximum size of memory in the wasm module (in bytes).
                            // Without this, TOTAL_MEMORY is used (as it is used for the initial value),
                            // or if memory growth is enabled, no limit is set. This overrides both of those.
-var BINARYEN_ASYNC_COMPILATION = 0; // Whether to compile the wasm asynchronously, which is more
-                                    // efficient. This is off by default in unoptimized builds and
-                                    // on by default in optimized ones.
+var BINARYEN_ASYNC_COMPILATION = 1; // Whether to compile the wasm asynchronously, which is more
+                                    // efficient and does not block the main thread. This is currently
+                                    // required for all but the smallest modules to run in V8
 var BINARYEN_ROOT = ""; // Directory where we can find Binaryen. Will be automatically set for you,
                         // but you can set it to override if you are a Binaryen developer.
 
@@ -716,6 +743,7 @@ var USE_BULLET = 0; // 1 = use bullet from emscripten-ports
 var USE_VORBIS = 0; // 1 = use vorbis from emscripten-ports
 var USE_OGG = 0; // 1 = use ogg from emscripten-ports
 var USE_FREETYPE = 0; // 1 = use freetype from emscripten-ports
+var USE_COCOS2D = 0; // 3 = use cocos2d v3 from emscripten-ports
 
 var SDL2_IMAGE_FORMATS = []; // Formats to support in SDL2_image. Valid values: bmp, gif, lbm, pcx, png, pnm, tga, xcf, xpm, xv
 
@@ -824,4 +852,3 @@ var ASMFS = 0; // If set to 1, uses the multithreaded filesystem that is impleme
 var WASM_TEXT_FILE = ''; // name of the file containing wasm text, if relevant
 var WASM_BINARY_FILE = ''; // name of the file containing wasm binary, if relevant
 var ASMJS_CODE_FILE = ''; // name of the file containing asm.js, if relevant
-

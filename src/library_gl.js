@@ -62,8 +62,8 @@ var LibraryGL = {
     stringCache: {},
 #if USE_WEBGL2
     stringiCache: {},
-    tempFixedLengthArray: [],
 #endif
+    tempFixedLengthArray: [],
 
     packAlignment: 4,   // default alignment is 4 bytes
     unpackAlignment: 4, // default alignment is 4 bytes
@@ -77,13 +77,11 @@ var LibraryGL = {
         GL.miniTempBufferViews[i] = GL.miniTempBuffer.subarray(0, i+1);
       }
 
-#if USE_WEBGL2
-      // For glInvalidateFramebuffer and glInvalidateSubFramebuffer, create a set of short fixed-length arrays to avoid
-      // having to generate any garbage in those functions.
+      // For functions such as glDrawBuffers, glInvalidateFramebuffer and glInvalidateSubFramebuffer that need to pass a short array to the WebGL API,
+      // create a set of short fixed-length arrays to avoid having to generate any garbage when calling those functions.
       for (var i = 0; i < 32; i++) {
-        GL.tempFixedLengthArray.push(new Array(i).fill(0));
+        GL.tempFixedLengthArray.push(new Array(i));
       }
-#endif
     },
 
     // Records a GL error condition that occurred, stored until user calls glGetError() to fetch it. As per GLES2 spec, only the first error 
@@ -417,7 +415,11 @@ var LibraryGL = {
     createContext: function(canvas, webGLContextAttributes) {
       if (typeof webGLContextAttributes['majorVersion'] === 'undefined' && typeof webGLContextAttributes['minorVersion'] === 'undefined') {
 #if USE_WEBGL2
-        webGLContextAttributes['majorVersion'] = 2;
+        // If caller did not specify a context, initialize the best one that is possibly available.
+        // To explicitly create a WebGL 1 or a WebGL 2 context, call this function with a specific
+        // majorVersion set.
+        if (typeof WebGL2RenderingContext !== 'undefined') webGLContextAttributes['majorVersion'] = 2;
+        else webGLContextAttributes['majorVersion'] = 1;
 #else
         webGLContextAttributes['majorVersion'] = 1;
 #endif
@@ -431,6 +433,15 @@ var LibraryGL = {
       try {
         canvas.addEventListener('webglcontextcreationerror', onContextCreationError, false);
         try {
+#if GL_PREINITIALIZED_CONTEXT
+          // If WebGL context has already been preinitialized for the page on the JS side, reuse that context instead. This is useful for example when
+          // the main page precompiles shaders for the application, in which case the WebGL context is created already before any Emscripten compiled
+          // code has been downloaded.
+          if (Module['preinitializedWebGLContext']) {
+            ctx = Module['preinitializedWebGLContext'];
+            webGLContextAttributes['majorVersion'] = (typeof WebGL2RenderingContext !== 'undefined' && ctx instanceof WebGL2RenderingContext) ? 2 : 1;
+          } else
+#endif
           if (webGLContextAttributes['majorVersion'] == 1 && webGLContextAttributes['minorVersion'] == 0) {
             ctx = canvas.getContext("webgl", webGLContextAttributes) || canvas.getContext("experimental-webgl", webGLContextAttributes);
           } else if (webGLContextAttributes['majorVersion'] == 2 && webGLContextAttributes['minorVersion'] == 0) {
@@ -544,6 +555,17 @@ var LibraryGL = {
         version: webGLContextAttributes['majorVersion'],
         GLctx: ctx
       };
+
+#if USE_WEBGL2
+      // BUG: Workaround Chrome WebGL 2 issue: the first shipped versions of WebGL 2 in Chrome did not actually implement the new WebGL 2 functions.
+      //      Those are supported only in Chrome 58 and newer.
+      function getChromeVersion() {
+        var raw = navigator.userAgent.match(/Chrom(e|ium)\/([0-9]+)\./);
+        return raw ? parseInt(raw[2], 10) : false;
+      }
+      context.supportsWebGL2EntryPoints = (context.version >= 2) && (getChromeVersion() === false || getChromeVersion() >= 58);
+#endif
+
       // Store the created context object so that we can access the context given a canvas without having to pass the parameters again.
       if (ctx.canvas) ctx.canvas.GLctxObject = context;
       GL.contexts[handle] = context;
@@ -1036,50 +1058,44 @@ var LibraryGL = {
   glCompressedTexImage2D__sig: 'viiiiiiii',
   glCompressedTexImage2D: function(target, level, internalFormat, width, height, border, imageSize, data) {
 #if USE_WEBGL2
-    if (GL.currentContext.version >= 2) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
+    if (GL.currentContext.supportsWebGL2EntryPoints) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
       GLctx['compressedTexImage2D'](target, level, internalFormat, width, height, border, HEAPU8, data, imageSize);
       return;
     }
 #endif
-
-    var heapView;
-    if (data) {
-      heapView = {{{ makeHEAPView('U8', 'data', 'data+imageSize') }}};
-    } else {
-      heapView = null;
-    }
-    GLctx['compressedTexImage2D'](target, level, internalFormat, width, height, border, heapView);
+    GLctx['compressedTexImage2D'](target, level, internalFormat, width, height, border, data ? {{{ makeHEAPView('U8', 'data', 'data+imageSize') }}} : null);
   },
 
 #if USE_WEBGL2
   glCompressedTexImage3D__sig: 'viiiiiiiii',
   glCompressedTexImage3D: function(target, level, internalFormat, width, height, depth, border, imageSize, data) {
-    GLctx['compressedTexImage3D'](target, level, internalFormat, width, height, depth, border, HEAPU8, data, imageSize);
+    if (GL.currentContext.supportsWebGL2EntryPoints) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
+      GLctx['compressedTexImage3D'](target, level, internalFormat, width, height, depth, border, HEAPU8, data, imageSize);
+    } else {
+      GLctx['compressedTexImage3D'](target, level, internalFormat, width, height, depth, border, data ? {{{ makeHEAPView('U8', 'data', 'data+imageSize') }}} : null);
+    }
   },
 #endif
 
   glCompressedTexSubImage2D__sig: 'viiiiiiiii',
   glCompressedTexSubImage2D: function(target, level, xoffset, yoffset, width, height, format, imageSize, data) {
 #if USE_WEBGL2
-    if (GL.currentContext.version >= 2) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
+    if (GL.currentContext.supportsWebGL2EntryPoints) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
       GLctx['compressedTexSubImage2D'](target, level, xoffset, yoffset, width, height, format, HEAPU8, data, imageSize);
       return;
     }
 #endif
-
-    var heapView;
-    if (data) {
-      heapView = {{{ makeHEAPView('U8', 'data', 'data+imageSize') }}};
-    } else {
-      heapView = null;
-    }
-    GLctx['compressedTexSubImage2D'](target, level, xoffset, yoffset, width, height, format, heapView);
+    GLctx['compressedTexSubImage2D'](target, level, xoffset, yoffset, width, height, format, data ? {{{ makeHEAPView('U8', 'data', 'data+imageSize') }}} : null);
   },
 
 #if USE_WEBGL2
   glCompressedTexSubImage3D__sig: 'viiiiiiiiiii',
   glCompressedTexSubImage3D: function(target, level, xoffset, yoffset, zoffset, width, height, depth, format, imageSize, data) {
-    GLctx['compressedTexSubImage3D'](target, level, xoffset, yoffset, zoffset, width, height, depth, format, HEAPU8, data, imageSize);
+    if (GL.currentContext.supportsWebGL2EntryPoints) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
+      GLctx['compressedTexSubImage3D'](target, level, xoffset, yoffset, zoffset, width, height, depth, format, HEAPU8, data, imageSize);
+    } else {
+      GLctx['compressedTexSubImage3D'](target, level, xoffset, yoffset, zoffset, width, height, depth, format, data ? {{{ makeHEAPView('U8', 'data', 'data+imageSize') }}} : null);
+    }
   },
 #endif
 
@@ -1297,10 +1313,33 @@ var LibraryGL = {
 #endif
 
   glTexImage2D__sig: 'viiiiiiiii',
-  glTexImage2D__deps: ['$emscriptenWebGLGetTexPixelData', '$emscriptenWebGLGetHeapForType', '$emscriptenWebGLGetShiftForType'],
+  glTexImage2D__deps: ['$emscriptenWebGLGetTexPixelData'
+#if USE_WEBGL2
+                       , '$emscriptenWebGLGetHeapForType', '$emscriptenWebGLGetShiftForType'
+#endif
+  ],
   glTexImage2D: function(target, level, internalFormat, width, height, border, format, type, pixels) {
 #if USE_WEBGL2
-    if (GL.currentContext.version >= 2) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
+#if WEBGL2_BACKWARDS_COMPATIBILITY_EMULATION
+    if (GL.currentContext.version >= 2) {
+      // WebGL 1 unsized texture internalFormats are no longer supported in WebGL 2, so patch those format
+      // enums to the ones that are present in WebGL 2.
+      if (format == 0x1902/*GL_DEPTH_COMPONENT*/ && internalFormat == 0x1902/*GL_DEPTH_COMPONENT*/ && type == 0x1405/*GL_UNSIGNED_INT*/) {
+        internalFormat = 0x81A6 /*GL_DEPTH_COMPONENT24*/;
+      }
+      if (type == 0x8d61/*GL_HALF_FLOAT_OES*/) {
+        type = 0x140B /*GL_HALF_FLOAT*/;
+        if (format == 0x1908/*GL_RGBA*/ && internalFormat == 0x1908/*GL_RGBA*/) {
+          internalFormat = 0x881A/*GL_RGBA16F*/;
+        }
+      }
+      if (internalFormat == 0x84f9 /*GL_DEPTH_STENCIL*/) {
+        internalFormat = 0x88F0 /*GL_DEPTH24_STENCIL8*/;
+      }
+    }
+#endif
+    if (GL.currentContext.supportsWebGL2EntryPoints) {
+      // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
       if (GLctx.currentPixelUnpackBufferBinding) {
         GLctx.texImage2D(target, level, internalFormat, width, height, border, format, type, pixels);
       } else if (pixels != 0) {
@@ -1318,10 +1357,23 @@ var LibraryGL = {
   },
 
   glTexSubImage2D__sig: 'viiiiiiiii',
-  glTexSubImage2D__deps: ['$emscriptenWebGLGetTexPixelData', '$emscriptenWebGLGetHeapForType', '$emscriptenWebGLGetShiftForType'],
+  glTexSubImage2D__deps: ['$emscriptenWebGLGetTexPixelData'
+#if USE_WEBGL2
+                          , '$emscriptenWebGLGetHeapForType', '$emscriptenWebGLGetShiftForType'
+#endif
+  ],
   glTexSubImage2D: function(target, level, xoffset, yoffset, width, height, format, type, pixels) {
 #if USE_WEBGL2
-    if (GL.currentContext.version >= 2) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
+#if WEBGL2_BACKWARDS_COMPATIBILITY_EMULATION
+    if (GL.currentContext.version >= 2) {
+      // In WebGL 1 to do half float textures, one uses the type enum GL_HALF_FLOAT_OES, but in
+      // WebGL 2 when half float textures were adopted to the core spec, the enum changed value
+      // which breaks backwards compatibility. Route old enum number to the new one.
+      if (type == 0x8d61/*GL_HALF_FLOAT_OES*/) type = 0x140B /*GL_HALF_FLOAT*/;
+    }
+#endif
+    if (GL.currentContext.supportsWebGL2EntryPoints) {
+      // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
       if (GLctx.currentPixelUnpackBufferBinding) {
         GLctx.texSubImage2D(target, level, internalFormat, width, height, border, format, type, pixels);
       } else if (pixels != 0) {
@@ -1338,10 +1390,14 @@ var LibraryGL = {
   },
 
   glReadPixels__sig: 'viiiiiii',
-  glReadPixels__deps: ['$emscriptenWebGLGetTexPixelData', '$emscriptenWebGLGetHeapForType', '$emscriptenWebGLGetShiftForType'],
+  glReadPixels__deps: ['$emscriptenWebGLGetTexPixelData'
+#if USE_WEBGL2
+                       , '$emscriptenWebGLGetHeapForType', '$emscriptenWebGLGetShiftForType'
+#endif
+  ],
   glReadPixels: function(x, y, width, height, format, type, pixels) {
 #if USE_WEBGL2
-    if (GL.currentContext.version >= 2) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
+    if (GL.currentContext.supportsWebGL2EntryPoints) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
       if (GLctx.currentPixelPackBufferBinding) {
         GLctx.readPixels(x, y, width, height, format, type, pixels);
       } else {
@@ -1486,7 +1542,8 @@ var LibraryGL = {
 
   glBufferData__sig: 'viiii',
   glBufferData: function(target, size, data, usage) {
-    switch (usage) { // fix usages, WebGL only has *_DRAW
+#if LEGACY_GL_EMULATION
+    switch (usage) { // fix usages, WebGL 1 only has *_DRAW
       case 0x88E1: // GL_STREAM_READ
       case 0x88E2: // GL_STREAM_COPY
         usage = 0x88E0; // GL_STREAM_DRAW
@@ -1500,9 +1557,16 @@ var LibraryGL = {
         usage = 0x88E8; // GL_DYNAMIC_DRAW
         break;
     }
+#endif
     if (!data) {
       GLctx.bufferData(target, size, usage);
     } else {
+#if USE_WEBGL2
+      if (GL.currentContext.supportsWebGL2EntryPoints) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
+        GLctx.bufferData(target, HEAPU8, usage, data, size);
+        return;
+      }
+#endif
       GLctx.bufferData(target, HEAPU8.subarray(data, data+size), usage);
     }
   },
@@ -1510,7 +1574,7 @@ var LibraryGL = {
   glBufferSubData__sig: 'viiii',
   glBufferSubData: function(target, offset, size, data) {
 #if USE_WEBGL2
-    if (GL.currentContext.version >= 2) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
+    if (GL.currentContext.supportsWebGL2EntryPoints) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
       GLctx.bufferSubData(target, offset, HEAPU8, data, size);
       return;
     }
@@ -1772,7 +1836,11 @@ var LibraryGL = {
     GL.mappedBuffers[buffer] = null;
 
     if (!(mapping.access & 0x10)) /* GL_MAP_FLUSH_EXPLICIT_BIT */
-      GLctx.bufferSubData(target, mapping.offset, HEAPU8.subarray(mapping.mem, mapping.mem+mapping.length));
+      if (GL.currentContext.supportsWebGL2EntryPoints) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
+        GLctx.bufferSubData(target, mapping.offset, HEAPU8, mapping.mem, mapping.length);
+      } else {
+        GLctx.bufferSubData(target, mapping.offset, HEAPU8.subarray(mapping.mem, mapping.mem+mapping.length));
+      }
     _free(mapping.mem);
     return 1;
   },
@@ -1782,7 +1850,7 @@ var LibraryGL = {
   glInvalidateFramebuffer__sig: 'viii',
   glInvalidateFramebuffer: function(target, numAttachments, attachments) {
 #if GL_ASSERTIONS
-    assert(numAttachments < GL.tempFixedLengthArray.length, 'Invalid count of numAttachments=' + numAttachments + ' passed to glInvalidateFramebuffer (that many attachment points do not exist in GL)';
+    assert(numAttachments < GL.tempFixedLengthArray.length, 'Invalid count of numAttachments=' + numAttachments + ' passed to glInvalidateFramebuffer (that many attachment points do not exist in GL)');
 #endif
     var list = GL.tempFixedLengthArray[numAttachments];
     for (var i = 0; i < numAttachments; i++) {
@@ -1795,7 +1863,7 @@ var LibraryGL = {
   glInvalidateSubFramebuffer__sig: 'viiiiiii',
   glInvalidateSubFramebuffer: function(target, numAttachments, attachments, x, y, width, height) {
 #if GL_ASSERTIONS
-    assert(numAttachments < GL.tempFixedLengthArray.length, 'Invalid count of numAttachments=' + numAttachments + ' passed to glInvalidateSubFramebuffer (that many attachment points do not exist in GL)';
+    assert(numAttachments < GL.tempFixedLengthArray.length, 'Invalid count of numAttachments=' + numAttachments + ' passed to glInvalidateSubFramebuffer (that many attachment points do not exist in GL)');
 #endif
     var list = GL.tempFixedLengthArray[numAttachments];
     for (var i = 0; i < numAttachments; i++) {
@@ -2815,7 +2883,7 @@ var LibraryGL = {
 #endif
 
 #if USE_WEBGL2
-    if (GL.currentContext.version >= 2) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
+    if (GL.currentContext.supportsWebGL2EntryPoints) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
       GLctx.uniform1iv(GL.uniforms[location], HEAP32, value>>2, count);
       return;
     }
@@ -2832,7 +2900,7 @@ var LibraryGL = {
 #endif
 
 #if USE_WEBGL2
-    if (GL.currentContext.version >= 2) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
+    if (GL.currentContext.supportsWebGL2EntryPoints) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
       GLctx.uniform2iv(GL.uniforms[location], HEAP32, value>>2, count*2);
       return;
     }
@@ -2849,7 +2917,7 @@ var LibraryGL = {
 #endif
 
 #if USE_WEBGL2
-    if (GL.currentContext.version >= 2) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
+    if (GL.currentContext.supportsWebGL2EntryPoints) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
       GLctx.uniform3iv(GL.uniforms[location], HEAP32, value>>2, count*3);
       return;
     }
@@ -2866,8 +2934,8 @@ var LibraryGL = {
 #endif
 
 #if USE_WEBGL2
-    if (GL.currentContext.version >= 2) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
-      GLctx.uniform3iv(GL.uniforms[location], HEAP32, value>>2, count*4);
+    if (GL.currentContext.supportsWebGL2EntryPoints) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
+      GLctx.uniform4iv(GL.uniforms[location], HEAP32, value>>2, count*4);
       return;
     }
 #endif
@@ -2883,7 +2951,7 @@ var LibraryGL = {
 #endif
 
 #if USE_WEBGL2
-    if (GL.currentContext.version >= 2) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
+    if (GL.currentContext.supportsWebGL2EntryPoints) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
       GLctx.uniform1fv(GL.uniforms[location], HEAPF32, value>>2, count);
       return;
     }
@@ -2910,7 +2978,7 @@ var LibraryGL = {
 #endif
 
 #if USE_WEBGL2
-    if (GL.currentContext.version >= 2) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
+    if (GL.currentContext.supportsWebGL2EntryPoints) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
       GLctx.uniform2fv(GL.uniforms[location], HEAPF32, value>>2, count*2);
       return;
     }
@@ -2938,7 +3006,7 @@ var LibraryGL = {
 #endif
 
 #if USE_WEBGL2
-    if (GL.currentContext.version >= 2) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
+    if (GL.currentContext.supportsWebGL2EntryPoints) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
       GLctx.uniform3fv(GL.uniforms[location], HEAPF32, value>>2, count*3);
       return;
     }
@@ -2967,7 +3035,7 @@ var LibraryGL = {
 #endif
 
 #if USE_WEBGL2
-    if (GL.currentContext.version >= 2) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
+    if (GL.currentContext.supportsWebGL2EntryPoints) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
       GLctx.uniform4fv(GL.uniforms[location], HEAPF32, value>>2, count*4);
       return;
     }
@@ -3028,7 +3096,11 @@ var LibraryGL = {
     GL.validateGLObjectID(GL.uniforms, location, 'glUniform1uiv', 'location');
     assert((value & 3) == 0, 'Pointer to integer data passed to glUniform1uiv must be aligned to four bytes!');
 #endif
-    GLctx.uniform1uiv(GL.uniforms[location], HEAPU32, value>>2, count);
+    if (GL.currentContext.supportsWebGL2EntryPoints) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
+      GLctx.uniform1uiv(GL.uniforms[location], HEAPU32, value>>2, count);
+    } else {
+      GLctx.uniform1uiv(GL.uniforms[location], {{{ makeHEAPView('U32', 'value', 'value+count*4') }}});
+    }
   },
 
   glUniform2uiv__sig: 'viii',
@@ -3037,7 +3109,11 @@ var LibraryGL = {
     GL.validateGLObjectID(GL.uniforms, location, 'glUniform2uiv', 'location');
     assert((value & 3) == 0, 'Pointer to integer data passed to glUniform2uiv must be aligned to four bytes!');
 #endif
-    GLctx.uniform2uiv(GL.uniforms[location], HEAPU32, value>>2, count*2);
+    if (GL.currentContext.supportsWebGL2EntryPoints) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
+      GLctx.uniform2uiv(GL.uniforms[location], HEAPU32, value>>2, count*2);
+    } else {
+      GLctx.uniform2uiv(GL.uniforms[location], {{{ makeHEAPView('U32', 'value', 'value+count*8') }}});
+    }
   },
 
   glUniform3uiv__sig: 'viii',
@@ -3046,7 +3122,11 @@ var LibraryGL = {
     GL.validateGLObjectID(GL.uniforms, location, 'glUniform3uiv', 'location');
     assert((value & 3) == 0, 'Pointer to integer data passed to glUniform3uiv must be aligned to four bytes!');
 #endif
-    GLctx.uniform3uiv(GL.uniforms[location], HEAPU32, value>>2, count*3);
+    if (GL.currentContext.supportsWebGL2EntryPoints) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
+      GLctx.uniform3uiv(GL.uniforms[location], HEAPU32, value>>2, count*3);
+    } else {
+      GLctx.uniform3uiv(GL.uniforms[location], {{{ makeHEAPView('U32', 'value', 'value+count*12') }}});
+    }
   },
 
   glUniform4uiv__sig: 'viii',
@@ -3055,7 +3135,11 @@ var LibraryGL = {
     GL.validateGLObjectID(GL.uniforms, location, 'glUniform4uiv', 'location');
     assert((value & 3) == 0, 'Pointer to integer data passed to glUniform4uiv must be aligned to four bytes!');
 #endif
-    GLctx.uniform4uiv(GL.uniforms[location], HEAPU32, value>>2, count*4);
+    if (GL.currentContext.supportsWebGL2EntryPoints) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
+      GLctx.uniform4uiv(GL.uniforms[location], HEAPU32, value>>2, count*4);
+    } else {
+      GLctx.uniform4uiv(GL.uniforms[location], {{{ makeHEAPView('U32', 'value', 'value+count*16') }}});
+    }
   },
 #endif
 
@@ -3067,7 +3151,7 @@ var LibraryGL = {
 #endif
 
 #if USE_WEBGL2
-    if (GL.currentContext.version >= 2) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
+    if (GL.currentContext.supportsWebGL2EntryPoints) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
       GLctx.uniformMatrix2fv(GL.uniforms[location], !!transpose, HEAPF32, value>>2, count*4);
       return;
     }
@@ -3097,7 +3181,7 @@ var LibraryGL = {
 #endif
 
 #if USE_WEBGL2
-    if (GL.currentContext.version >= 2) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
+    if (GL.currentContext.supportsWebGL2EntryPoints) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
       GLctx.uniformMatrix3fv(GL.uniforms[location], !!transpose, HEAPF32, value>>2, count*9);
       return;
     }
@@ -3132,7 +3216,7 @@ var LibraryGL = {
 #endif
 
 #if USE_WEBGL2
-    if (GL.currentContext.version >= 2) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
+    if (GL.currentContext.supportsWebGL2EntryPoints) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
       GLctx.uniformMatrix4fv(GL.uniforms[location], !!transpose, HEAPF32, value>>2, count*16);
       return;
     }
@@ -3173,7 +3257,11 @@ var LibraryGL = {
     GL.validateGLObjectID(GL.uniforms, location, 'glUniformMatrix2x3fv', 'location');
     assert((value & 3) == 0, 'Pointer to float data passed to glUniformMatrix2x3fv must be aligned to four bytes!');
 #endif
-    GLctx.uniformMatrix2x3fv(GL.uniforms[location], !!transpose, HEAPF32, value>>2, count*6);
+    if (GL.currentContext.supportsWebGL2EntryPoints) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
+      GLctx.uniformMatrix2x3fv(GL.uniforms[location], !!transpose, HEAPF32, value>>2, count*6);
+    } else {
+      GLctx.uniformMatrix2x3fv(GL.uniforms[location], !!transpose, {{{ makeHEAPView('F32', 'value', 'value+count*24') }}});
+    }
   },
 
   glUniformMatrix3x2fv__sig: 'viiii',
@@ -3182,7 +3270,11 @@ var LibraryGL = {
     GL.validateGLObjectID(GL.uniforms, location, 'glUniformMatrix3x2fv', 'location');
     assert((value & 3) == 0, 'Pointer to float data passed to glUniformMatrix3x2fv must be aligned to four bytes!');
 #endif
-    GLctx.uniformMatrix3x2fv(GL.uniforms[location], !!transpose, HEAPF32, value>>2, count*6);
+    if (GL.currentContext.supportsWebGL2EntryPoints) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
+      GLctx.uniformMatrix3x2fv(GL.uniforms[location], !!transpose, HEAPF32, value>>2, count*6);
+    } else {
+      GLctx.uniformMatrix3x2fv(GL.uniforms[location], !!transpose, {{{ makeHEAPView('F32', 'value', 'value+count*24') }}});
+    }
   },
 
   glUniformMatrix2x4fv__sig: 'viiii',
@@ -3191,7 +3283,11 @@ var LibraryGL = {
     GL.validateGLObjectID(GL.uniforms, location, 'glUniformMatrix2x4fv', 'location');
     assert((value & 3) == 0, 'Pointer to float data passed to glUniformMatrix2x4fv must be aligned to four bytes!');
 #endif
-    GLctx.uniformMatrix2x4fv(GL.uniforms[location], !!transpose, HEAPF32, value>>2, count*8);
+    if (GL.currentContext.supportsWebGL2EntryPoints) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
+      GLctx.uniformMatrix2x4fv(GL.uniforms[location], !!transpose, HEAPF32, value>>2, count*8);
+    } else {
+      GLctx.uniformMatrix2x4fv(GL.uniforms[location], !!transpose, {{{ makeHEAPView('F32', 'value', 'value+count*32') }}});
+    }
   },
 
   glUniformMatrix4x2fv__sig: 'viiii',
@@ -3200,7 +3296,11 @@ var LibraryGL = {
     GL.validateGLObjectID(GL.uniforms, location, 'glUniformMatrix4x2fv', 'location');
     assert((value & 3) == 0, 'Pointer to float data passed to glUniformMatrix4x2fv must be aligned to four bytes!');
 #endif
-    GLctx.uniformMatrix4x2fv(GL.uniforms[location], !!transpose, HEAPF32, value>>2, count*8);
+    if (GL.currentContext.supportsWebGL2EntryPoints) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
+      GLctx.uniformMatrix4x2fv(GL.uniforms[location], !!transpose, HEAPF32, value>>2, count*8);
+    } else {
+      GLctx.uniformMatrix4x2fv(GL.uniforms[location], !!transpose, {{{ makeHEAPView('F32', 'value', 'value+count*32') }}});
+    }
   },
 
   glUniformMatrix3x4fv__sig: 'viiii',
@@ -3209,7 +3309,11 @@ var LibraryGL = {
     GL.validateGLObjectID(GL.uniforms, location, 'glUniformMatrix3x4fv', 'location');
     assert((value & 3) == 0, 'Pointer to float data passed to glUniformMatrix3x4fv must be aligned to four bytes!');
 #endif
-    GLctx.uniformMatrix3x4fv(GL.uniforms[location], !!transpose, HEAPF32, value>>2, count*12);
+    if (GL.currentContext.supportsWebGL2EntryPoints) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
+      GLctx.uniformMatrix3x4fv(GL.uniforms[location], !!transpose, HEAPF32, value>>2, count*12);
+    } else {
+      GLctx.uniformMatrix3x4fv(GL.uniforms[location], !!transpose, {{{ makeHEAPView('F32', 'value', 'value+count*48') }}});
+    }
   },
 
   glUniformMatrix4x3fv__sig: 'viiii',
@@ -3218,7 +3322,11 @@ var LibraryGL = {
     GL.validateGLObjectID(GL.uniforms, location, 'glUniformMatrix4x3fv', 'location');
     assert((value & 3) == 0, 'Pointer to float data passed to glUniformMatrix4x3fv must be aligned to four bytes!');
 #endif
-    GLctx.uniformMatrix4x3fv(GL.uniforms[location], !!transpose, HEAPF32, value>>2, count*12);
+    if (GL.currentContext.supportsWebGL2EntryPoints) { // WebGL 2 provides new garbage-free entry points to call to WebGL. Use those always when possible.
+      GLctx.uniformMatrix4x3fv(GL.uniforms[location], !!transpose, HEAPF32, value>>2, count*12);
+    } else {
+      GLctx.uniformMatrix4x3fv(GL.uniforms[location], !!transpose, {{{ makeHEAPView('F32', 'value', 'value+count*48') }}});
+    }
   },
 #endif
 
@@ -3388,6 +3496,49 @@ var LibraryGL = {
     GL.validateGLObjectID(GL.shaders, shader, 'glShaderSource', 'shader');
 #endif
     var source = GL.getSource(shader, count, string, length);
+
+#if WEBGL2_BACKWARDS_COMPATIBILITY_EMULATION
+    if (GL.currentContext.version >= 2) {
+      // If a WebGL 1 shader happens to use GL_EXT_shader_texture_lod extension,
+      // it will not compile on WebGL 2, because WebGL 2 no longer supports that
+      // extension for WebGL 1 shaders. Therefore upgrade shaders to WebGL 2
+      // by doing a bunch of dirty hacks. Not guaranteed to work on all shaders.
+      // One might consider doing this for only the shaders that actually use
+      // the GL_EXT_shader_texture_lod extension, but the problem is that
+      // vertex and fragment shader versions need to match, and when compiling
+      // the corresponding vertex shader, we would not know if that needed to
+      // be compiled with or without the patch, so we must patch all shaders.
+      if (source.indexOf('#version 100') != -1) {
+        source = source.replace(/#extension GL_OES_standard_derivatives : enable/g, "");
+        source = source.replace(/#extension GL_EXT_shader_texture_lod : enable/g, '');
+        var prelude = '';
+        if (source.indexOf('gl_FragColor') != -1) {
+          prelude += 'out mediump vec4 GL_FragColor;\n';
+          source = source.replace(/gl_FragColor/g, 'GL_FragColor');
+        }
+        if (source.indexOf('attribute') != -1) {
+          source = source.replace(/attribute/g, 'in');
+          source = source.replace(/varying/g, 'out');
+        } else {
+          source = source.replace(/varying/g, 'in');
+        }
+
+        source = source.replace(/textureCubeLodEXT/g, 'textureCubeLod');
+        source = source.replace(/texture2DLodEXT/g, 'texture2DLod');
+        source = source.replace(/texture2DProjLodEXT/g, 'texture2DProjLod');
+        source = source.replace(/texture2DGradEXT/g, 'texture2DGrad');
+        source = source.replace(/texture2DProjGradEXT/g, 'texture2DProjGrad');
+        source = source.replace(/textureCubeGradEXT/g, 'textureCubeGrad');
+
+        source = source.replace(/textureCube/g, 'texture');
+        source = source.replace(/texture1D/g, 'texture');
+        source = source.replace(/texture2D/g, 'texture');
+        source = source.replace(/texture3D/g, 'texture');
+        source = source.replace(/#version 100/g, '#version 300 es\n' + prelude);
+      }
+    }
+#endif
+
     GLctx.shaderSource(GL.shaders[shader], source);
   },
 
@@ -7413,9 +7564,14 @@ var LibraryGL = {
 #if GL_ASSERTIONS
     assert(GLctx['drawBuffers'], 'Must have WebGL2 or WEBGL_draw_buffers extension to use drawBuffers');
 #endif
-    var bufArray = [];
-    for (var i = 0; i < n; i++)
-      bufArray.push({{{ makeGetValue('bufs', 'i*4', 'i32') }}});
+#if GL_ASSERTIONS
+    assert(n < GL.tempFixedLengthArray.length, 'Invalid count of numBuffers=' + n + ' passed to glDrawBuffers (that many draw buffer points do not exist in GL)');
+#endif
+
+    var bufArray = GL.tempFixedLengthArray[n];
+    for (var i = 0; i < n; i++) {
+      bufArray[i] = {{{ makeGetValue('bufs', 'i*4', 'i32') }}};
+    }
 
     GLctx['drawBuffers'](bufArray);
   },
