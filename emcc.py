@@ -337,6 +337,15 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
       seen_names[name] = str(len(seen_names))
     return unsuffixed(name) + '_' + seen_names[name] + (('.' + suffix(name)) if suffix(name) else '')
 
+  def asciify(strings_list):
+    res = ''
+    for s in strings_list:
+      if isinstance(s, unicode):
+        res += s.encode('ascii','ignore')
+      else:
+        res += s
+    return res
+
   # ---------------- End configs -------------
 
   if len(sys.argv) == 1 or sys.argv[1] in ['x', 't']:
@@ -2131,7 +2140,7 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
           if emit_symbol_map or shared.Settings.CYBERDWARF:
             cmd += ['--symbolmap=' + target + '.symbols']
           cmd += ['-o', wasm_binary_target]
-          logging.debug('asm2wasm (asm.js => WebAssembly): ' + ' '.join(cmd))
+          logging.debug('asm2wasm (asm.js => WebAssembly): ' + ' '.join(asciify(cmd)))
           TimeLogger.update()
           subprocess.check_call(cmd)
           if import_mem_init:
@@ -2142,11 +2151,11 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
         if shared.Settings.BINARYEN_PASSES:
           shutil.move(wasm_binary_target, wasm_binary_target + '.pre')
           cmd = [os.path.join(binaryen_bin, 'wasm-opt'), wasm_binary_target + '.pre', '-o', wasm_binary_target] + map(lambda p: '--' + p, shared.Settings.BINARYEN_PASSES.split(','))
-          logging.debug('wasm-opt on BINARYEN_PASSES: ' + ' '.join(cmd))
+          logging.debug('wasm-opt on BINARYEN_PASSES: ' + ' '.join(asciify(cmd)))
           subprocess.check_call(cmd)
         if 'interpret-s-expr' in shared.Settings.BINARYEN_METHOD:
           cmd = [os.path.join(binaryen_bin, 'wasm-dis'), wasm_binary_target, '-o', wasm_text_target]
-          logging.debug('wasm-dis (binary => text): ' + ' '.join(cmd))
+          logging.debug('wasm-dis (binary => text): ' + ' '.join(asciify(cmd)))
           subprocess.check_call(cmd)
         if shared.Settings.BINARYEN_SCRIPTS:
           binaryen_scripts = os.path.join(shared.Settings.BINARYEN_ROOT, 'scripts')
