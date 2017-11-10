@@ -1642,7 +1642,11 @@ class Building:
           logging.warning('Note: Input file "' + i + '" did not exist.')
         elif not Building.is_bitcode(i):
           logging.warning('Note: Input file "' + i + '" exists but was not an LLVM bitcode file suitable for Emscripten. Perhaps accidentally mixing native built object files with Emscripten?')
-      sys.exit(1)
+      if len(inputs) == 1 and os.path.exists(filename):
+        logging.warning('llvm_opt fallback: copy %s to %s', filename, target)
+        shutil.copyfile(filename, target)
+      else:
+        sys.exit(1)
     if not out:
       shutil.move(filename + '.opt.bc', filename)
     return target
