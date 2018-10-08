@@ -1072,6 +1072,10 @@ var LibraryJSEvents = {
     },
   },
 
+  emscripten_html5_deinit: function() {
+    JSEvents.deinit();
+  },
+
   emscripten_set_keypress_callback: function(target, userData, useCapture, callbackfunc) {
     JSEvents.registerKeyEventCallback(target, userData, useCapture, callbackfunc, {{{ cDefine('EMSCRIPTEN_EVENT_KEYPRESS') }}}, "keypress");
     return {{{ cDefine('EMSCRIPTEN_RESULT_SUCCESS') }}};
