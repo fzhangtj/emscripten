@@ -35,10 +35,13 @@ var LibraryJSEvents = {
     // Track in this field whether we have yet registered that __ATEXIT__ handler.
     removeEventListenersRegistered: false, 
 
+    __gamepadsConnected: function() { ++JSEvents.numGamepadsConnected; },
+    __gamepadsDisconnected: function() { --JSEvents.numGamepadsConnected; },
+
     staticInit: function() {
       if (typeof window !== 'undefined') {
-        window.addEventListener("gamepadconnected", function() { ++JSEvents.numGamepadsConnected; });
-        window.addEventListener("gamepaddisconnected", function() { --JSEvents.numGamepadsConnected; });
+        window.addEventListener("gamepadconnected", JSEvents.__gamepadsConnected);
+        window.addEventListener("gamepaddisconnected", JSEvents.__gamepadsDisconnected);
         
         // Chromium does not fire the gamepadconnected event on reload, so we need to get the number of gamepads here as a workaround.
         // See https://bugs.chromium.org/p/chromium/issues/detail?id=502824
@@ -49,13 +52,18 @@ var LibraryJSEvents = {
       }
     },
 
+    deinit: function() {
+      window.removeEventListener("gamepadconnected", JSEvents.__gamepadsConnected);
+      window.removeEventListener("gamepaddisconnected", JSEvents.__gamepadsDisconnected);
+
+      for(var i = JSEvents.eventHandlers.length-1; i >= 0; --i) {
+        JSEvents._removeHandler(i);
+      }
+    },
+
     registerRemoveEventListeners: function() {
       if (!JSEvents.removeEventListenersRegistered) {
-      __ATEXIT__.push(function() {
-          for(var i = JSEvents.eventHandlers.length-1; i >= 0; --i) {
-            JSEvents._removeHandler(i);
-          }
-         });
+      __ATEXIT__.push(JSEvents.deinit());
         JSEvents.removeEventListenersRegistered = true;
       }
     },
