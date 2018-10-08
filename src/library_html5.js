@@ -63,7 +63,7 @@ var LibraryJSEvents = {
 
     registerRemoveEventListeners: function() {
       if (!JSEvents.removeEventListenersRegistered) {
-      __ATEXIT__.push(JSEvents.deinit());
+      __ATEXIT__.push(function() { JSEvents.deinit() });
         JSEvents.removeEventListenersRegistered = true;
       }
     },
