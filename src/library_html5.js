@@ -1,5 +1,5 @@
 var LibraryJSEvents = {
-  $JSEvents__postset: 'JSEvents.staticInit();',
+  $JSEvents__postset: 'JSEvents.staticInit(); Module["removeAllEventListeners"] = function Module_removeAllEventListeners() { JSEvents.deinit(); }',
   $JSEvents: {
     // pointers to structs malloc()ed to Emscripten HEAP for JS->C interop.
     keyEvent: 0,
