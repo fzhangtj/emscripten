@@ -397,7 +397,7 @@ extern EMSCRIPTEN_RESULT emscripten_vibrate_pattern(int *msecsArray, int numEntr
 typedef const char *(*em_beforeunload_callback)(int eventType, const void *reserved, void *userData);
 extern EMSCRIPTEN_RESULT emscripten_set_beforeunload_callback(void *userData, em_beforeunload_callback callback);
 
-extern void emscripten_html5_deinit(void);
+extern void emscripten_html5_remove_all_event_listeners(void);
 
 typedef int EMSCRIPTEN_WEBGL_CONTEXT_HANDLE;
 

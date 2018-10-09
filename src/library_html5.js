@@ -1,5 +1,5 @@
 var LibraryJSEvents = {
-  $JSEvents__postset: 'JSEvents.staticInit(); Module["removeAllEventListeners"] = function Module_removeAllEventListeners() { JSEvents.deinit(); }',
+  $JSEvents__postset: 'JSEvents.staticInit(); Module["removeAllEventListeners"] = function Module_removeAllEventListeners() { JSEvents.removeAllEventListeners(); }',
   $JSEvents: {
     // pointers to structs malloc()ed to Emscripten HEAP for JS->C interop.
     keyEvent: 0,
@@ -52,7 +52,7 @@ var LibraryJSEvents = {
       }
     },
 
-    deinit: function() {
+    removeAllEventListeners: function() {
       window.removeEventListener("gamepadconnected", JSEvents.__gamepadsConnected);
       window.removeEventListener("gamepaddisconnected", JSEvents.__gamepadsDisconnected);
 
@@ -63,7 +63,7 @@ var LibraryJSEvents = {
 
     registerRemoveEventListeners: function() {
       if (!JSEvents.removeEventListenersRegistered) {
-      __ATEXIT__.push(function() { JSEvents.deinit() });
+      __ATEXIT__.push(function() { JSEvents.removeAllEventListeners() });
         JSEvents.removeEventListenersRegistered = true;
       }
     },
@@ -1072,8 +1072,8 @@ var LibraryJSEvents = {
     },
   },
 
-  emscripten_html5_deinit: function() {
-    JSEvents.deinit();
+  emscripten_html5_remove_all_event_listeners: function() {
+    JSEvents.removeAllEventListeners();
   },
 
   emscripten_set_keypress_callback: function(target, userData, useCapture, callbackfunc) {
