@@ -444,6 +444,8 @@ extern EMSCRIPTEN_RESULT emscripten_get_canvas_element_size(const char *target, 
 extern EMSCRIPTEN_RESULT emscripten_set_element_css_size(const char *target, double width, double height);
 extern EMSCRIPTEN_RESULT emscripten_get_element_css_size(const char *target, double *width, double *height);
 
+extern void emscripten_html5_remove_all_event_listeners(void);
+
 #ifdef __cplusplus
 } // ~extern "C"
 #endif
