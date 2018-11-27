@@ -230,6 +230,13 @@ def main():
           return int(emscripten_GetProcAddress("waka waka"));
         }
       ''', ['gl.bc'])
+    elif what == 'gl-mt':
+      build('''
+        extern "C" { extern void* emscripten_GetProcAddress(const char *x); }
+        int main() {
+          return int(emscripten_GetProcAddress("waka waka"));
+        }
+      ''', ['gl-mt.bc'], ['-s', 'USE_PTHREADS=1'])
     elif what == 'native_optimizer':
       build(C_BARE, ['optimizer.2.exe'], ['-O2', '-s', 'WASM=0'])
     elif what == 'wasm_compiler_rt':
