@@ -98,7 +98,7 @@ class Cache(object):
       message = 'generating ' + what + ': ' + shortname + '... (this will be cached in "' + cachename + '" for subsequent builds)'
       logging.info(message)
       self.ensure()
-      temp = os.path.normpath(creator())
+      temp = creator()
       if temp != cachename:
         shutil.copyfile(temp, cachename)
       logging.info(' - ok')
