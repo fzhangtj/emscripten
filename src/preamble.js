@@ -365,6 +365,8 @@ assert(STACK_BASE % 16 === 0, 'stack must start aligned');
 assert(DYNAMIC_BASE % 16 === 0, 'heap must start aligned');
 #endif
 
+STACK_BASE = new WebAssembly.Global({value:'i32', mutable:true}, STACK_BASE);
+
 #if USE_PTHREADS
 if (ENVIRONMENT_IS_PTHREAD) {
 

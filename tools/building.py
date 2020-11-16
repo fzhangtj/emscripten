@@ -577,6 +577,9 @@ def link_lld(args, target, external_symbol_list=None):
     args.insert(0, '--whole-archive')
     args.append('--no-whole-archive')
 
+  # Enable mutable globals.
+  args.append('--features=mutable-globals')
+
   if Settings.STRICT:
     args.append('--fatal-warnings')
 
