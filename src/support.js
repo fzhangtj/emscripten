@@ -446,13 +446,6 @@ function loadWebAssemblyModule(binary, flags) {
       return resolved;
     }
 
-    // copy currently exported symbols so the new module can import them
-    for (var x in Module) {
-      if (!(x in env)) {
-        env[x] = Module[x];
-      }
-    }
-
     // TODO kill ↓↓↓ (except "symbols local to this module", it will likely be
     // not needed if we require that if A wants symbols from B it has to link
     // to B explicitly: similarly to -Wl,--no-undefined)
@@ -514,9 +507,7 @@ function loadWebAssemblyModule(binary, flags) {
           return obj[prop] = invoke_X;
         }
         // otherwise this is regular function import - call it indirectly
-        return obj[prop] = function() {
-          return resolveSymbol(prop, 'function').apply(null, arguments);
-        };
+        return obj[prop] = resolveSymbol(prop, 'function');
       }
     };
     var proxy = new Proxy(env, proxyHandler);
